@@ -24,9 +24,13 @@
 // * logging
 // * cli argument parsing
 // * * getopts looks interesting.
-// * metrics (probably trivial-statsd)
 // * date/time
 // * * utc / timezone
 // * * monotone
 // * * format
 // * * tm struct
+//
+// Later:
+// * metrics (probably trivial-statsd)
+
+pub mod rand;

@@ -19,19 +19,48 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// First crates to implement:
-// * rand
-// * logging
-// * cli argument parsing
-// * * getopts looks interesting.
-// * date/time
-// * * utc / timezone
-// * * monotone
-// * * format
-// * * tm struct
-//
-// Later:
-// * metrics (probably trivial-statsd)
+use std::env::temp_dir;
+use std::fs::{File, remove_file};
+use std::io;
+use std::path::PathBuf;
 
-pub mod fs;
-pub mod rand;
+use rand::Rng;
+
+pub struct TempFile {
+    path: PathBuf,
+}
+
+impl TempFile {
+    pub fn new() -> io::Result<Self> {
+        let mut rng = Rng::new();
+        let path = temp_dir()
+            .join(format!("file{}", rng.next()));
+        File::create(&path)?;
+        Ok(Self {
+            path,
+        })
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TempFile;
+
+    #[test]
+    fn test_temp_dir_exists() {
+        let path;
+        {
+            let temp_dir = TempFile::new().expect("new temp dir");
+            path = temp_dir.path.clone();
+            assert!(path.is_file());
+        }
+        assert!(!path.is_file());
+        assert!(!path.exists());
+    }
+}

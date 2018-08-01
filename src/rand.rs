@@ -29,34 +29,41 @@ pub struct Rng {
     inc: u64,
 }
 
+impl Default for Rng {
+    fn default() -> Self {
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(res) => Self::seed_with(res.as_secs()),
+            Err(_) => Self::seed_with(6_364_136_223_846_793_005)
+        }
+    }
+}
+
 impl Rng {
     fn pcg32(&mut self) -> u32 {
         let oldstate = self.state;
         // Advance internal state
-        self.state = u64::wrapping_add(u64::wrapping_mul(oldstate, 6364136223846793005u64), self.inc | 1);
+        self.state = u64::wrapping_add(u64::wrapping_mul(oldstate, 6_364_136_223_846_793_005u64), self.inc | 1);
         // Calculate output function (XSH RR), uses old state for max ILP
-        let xorshifted = (((oldstate >> 18) ^ oldstate) >> 27) & 0xFFFFFFFF;
-        let rot = (oldstate >> 59) & 0xFFFFFFFF;
+        let xorshifted = (((oldstate >> 18) ^ oldstate) >> 27) & 0xFFFF_FFFF;
+        let rot = (oldstate >> 59) & 0xFFFF_FFFF;
         let v = (xorshifted >> rot) | (xorshifted << (u64::wrapping_sub(0, rot) & 31));
         v as u32
     }
 
-    pub fn seed_with(seed: u64) -> Rng {
+    pub fn seed_with(seed: u64) -> Self {
         // We xor the seed with a randomly chosen number to avoid ending up with
         // a 0 state which would be bad.
-        Rng {
-            state: seed ^ 0xedef335f00e170b3,
+        Self {
+            state: seed ^ 0xedef_335f_00e1_70b3,
             inc: 12345,
         }
     }
 
-    pub fn new() -> Rng {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(res) => Rng::seed_with(res.as_secs()),
-            Err(_) => Rng::seed_with(6364136223846793005)
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
+    #[cfg_attr(feature = "cargo-clippy", allow(should_implement_trait))]
     pub fn next(&mut self) -> u32 {
         self.pcg32()
     }
@@ -66,8 +73,8 @@ impl Rng {
     }
 
     pub fn next_double(&mut self) -> f64 {
-        let max = u32::MAX as f64;
-        let n = self.next() as f64;
+        let max = f64::from(u32::MAX);
+        let n = f64::from(self.next());
         n / max
     }
 }

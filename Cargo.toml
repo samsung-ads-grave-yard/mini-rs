@@ -1,5 +1,5 @@
 [package]
-name = "core"
+name = "mini"
 version = "0.0.1"
 authors = ["Antoni Boucher <antoni.boucher@samsung.com>"]
 description = "Dependency-free extension to the standard library"

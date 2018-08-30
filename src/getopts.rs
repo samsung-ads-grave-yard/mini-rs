@@ -362,8 +362,7 @@ impl Options {
                         // This matches GNU getopt behavior; but also
                         // makes sense, because if this were accepted,
                         // then users could only write a "Maybe" long
-                        // option at the end of the arguments when
-                        // FloatingFrees is in use.
+                        // option at the end of the arguments.
                         if let Some(i_arg) = i_arg.take() {
                             vals[optid].push(Val(i_arg));
                         } else if was_long || name_pos < names.len() || args.peek().map_or(true, |n| is_arg(&n)) {

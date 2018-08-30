@@ -93,13 +93,14 @@ mod tests {
             numbers.push(rng.next());
         }
         let (min, max) = {
-            (numbers.iter().map(|&num| num).min().expect("minimum"), numbers.iter().map(|&num| num).max().expect("maximum"))
+            (numbers.iter().cloned().min().expect("minimum"), numbers.iter().cloned().max().expect("maximum"))
         };
-        let median = ((max - min) / 2) as f64;
+        let median = f64::from((max - min) / 2);
         let len = numbers.len();
-        let avg = numbers.into_iter().map(|num| num as u64).sum::<u64>() / len as u64;
+        let avg = numbers.into_iter().map(u64::from).sum::<u64>() / len as u64;
         let ratio = median / avg as f64;
-        assert!(ratio - 1.0 < 0.01);
+        // Check that the ratio of the median over the average is close to one.
+        assert!((ratio - 1.0).abs() < 0.01);
     }
 
     fn distribution_with_capacity(capacity: usize) {
@@ -123,7 +124,7 @@ mod tests {
         assert!(max - min < 100);
         assert!(occurences.len() < 100);
         // We generated at least once every numbers in the range.
-        assert!(values.iter().find(|&&v| v == 0).is_none());
+        assert!(!values.iter().any(|&v| v == 0));
     }
 
     #[test]

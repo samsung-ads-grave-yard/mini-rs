@@ -113,7 +113,6 @@ use std::result;
 pub struct Options {
     grps: Vec<OptGroup>,
     parsing_style : ParsingStyle,
-    long_only: bool
 }
 
 impl Default for Options {
@@ -121,7 +120,6 @@ impl Default for Options {
         Self {
             grps: Vec::new(),
             parsing_style: ParsingStyle::FloatingFrees,
-            long_only: false
         }
     }
 }
@@ -135,19 +133,6 @@ impl Options {
     /// Set the parsing style.
     pub fn parsing_style(&mut self, style: ParsingStyle) -> &mut Options {
         self.parsing_style = style;
-        self
-    }
-
-    /// Set or clear "long options only" mode.
-    ///
-    /// In "long options only" mode, short options cannot be clustered
-    /// together, and long options can be given with either a single
-    /// "-" or the customary "--".  This mode also changes the meaning
-    /// of "-a=b"; in the ordinary mode this will parse a short option
-    /// "-a" with argument "=b"; whereas in long-options-only mode the
-    /// argument will be simply "b".
-    pub fn long_only(&mut self, long_only: bool) -> &mut Options {
-        self.long_only = long_only;
         self
     }
 
@@ -313,6 +298,7 @@ impl Options {
         let mut args = args.into_iter().peekable();
         while let Some(cur) = args.next() {
             if !is_arg(&cur) {
+                // If it's not an argument starting with `-`, it's a free argument.
                 free.push(cur);
                 match self.parsing_style {
                     ParsingStyle::FloatingFrees => {},
@@ -322,25 +308,23 @@ impl Options {
                     }
                 }
             } else if cur == "--" {
+                // After `--`, the rest of the arguments are free arguments.
                 free.extend(args);
                 break;
             } else {
                 let mut names;
                 let mut i_arg = None;
                 let mut was_long = true;
-                if cur.as_bytes()[1] == b'-' || self.long_only {
-                    let tail = if cur.as_bytes()[1] == b'-' {
-                        &cur[2..]
-                    } else {
-                        assert!(self.long_only);
-                        &cur[1..]
-                    };
+                if cur.as_bytes()[1] == b'-' {
+                    // Parsing long argument.
+                    let tail = &cur[2..];
                     let mut parts = tail.splitn(2, '=');
                     names = vec![Name::from_str(parts.next().unwrap())];
                     if let Some(rest) = parts.next() {
                         i_arg = Some(rest.to_string());
                     }
                 } else {
+                    // Parsing short argument.
                     was_long = false;
                     names = Vec::new();
                     for (j, ch) in cur.char_indices().skip(1) {
@@ -498,11 +482,7 @@ impl Options {
             match long_name.len() {
                 0 => {}
                 _ => {
-                    if self.long_only {
-                        row.push('-');
-                    } else {
-                        row.push_str("--");
-                    }
+                    row.push_str("--");
                     row.push_str(&long_name);
                     row.push(' ');
                 }

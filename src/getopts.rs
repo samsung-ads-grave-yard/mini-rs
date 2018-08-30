@@ -39,7 +39,7 @@
 //! and this to your crate root:
 //!
 //! ```rust
-//! extern crate core;
+//! extern crate mini;
 //! ```
 //!
 //! # Example
@@ -49,8 +49,8 @@
 //! name following `-o`, and accepts both `-h` and `--help` as optional flags.
 //!
 //! ```{.rust}
-//! extern crate core;
-//! use core::getopts::Options;
+//! extern crate mini;
+//! use mini::getopts::Options;
 //! use std::env;
 //!
 //! fn do_work(inp: &str, out: Option<String>) {

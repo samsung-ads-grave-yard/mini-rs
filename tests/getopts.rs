@@ -1,7 +1,7 @@
-extern crate core;
+extern crate mini;
 
-use core::getopts::Options;
-use core::getopts::Fail::*;
+use mini::getopts::Options;
+use mini::getopts::Fail::*;
 
 // Tests for reqopt
 #[test]

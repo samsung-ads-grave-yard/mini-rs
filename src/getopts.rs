@@ -1016,7 +1016,7 @@ mod tests {
                                 aliases: Vec::new() });
         let mut opts = Options::new();
         opts.reqopt("b", "banana", "some bananas", "VAL");
-        let ref verbose = opts.grps[0];
+        let verbose = &opts.grps[0];
         assert!(verbose.long_to_short() == short);
     }
 }

@@ -537,10 +537,7 @@ fn test_multi() {
     opts.optopt("f", "", "flag", "FLAG");
 
     let args_single = vec!("-e".to_string(), "foo".to_string());
-    let matches_single = &match opts.parse(&args_single) {
-      Ok(m) => m,
-      Err(_) => panic!()
-    };
+    let matches_single = &opts.parse(&args_single).expect("parse args_single");
     assert!(matches_single.opts_present(&["e".to_string()]));
     assert!(matches_single.opts_present(&["encrypt".to_string(), "e".to_string()]));
     assert!(matches_single.opts_present(&["e".to_string(), "encrypt".to_string()]));
@@ -556,10 +553,7 @@ fn test_multi() {
 
     let args_both = vec!("-e".to_string(), "foo".to_string(), "--encrypt".to_string(),
                          "foo".to_string());
-    let matches_both = &match opts.parse(&args_both) {
-      Ok(m) => m,
-      Err(_) => panic!()
-    };
+    let matches_both = &opts.parse(&args_both).expect("parse args_both");
     assert!(matches_both.opts_present(&["e".to_string()]));
     assert!(matches_both.opts_present(&["encrypt".to_string()]));
     assert!(matches_both.opts_present(&["encrypt".to_string(), "e".to_string()]));
@@ -579,13 +573,11 @@ fn test_multi() {
 #[test]
 fn test_nospace() {
     let args = vec!("-Lfoo".to_string(), "-M.".to_string());
-    let matches = &match Options::new()
-                                 .optmulti("L", "", "library directory", "LIB")
-                                 .optmulti("M", "", "something", "MMMM")
-                                 .parse(&args) {
-      Ok(m) => m,
-      Err(_) => panic!()
-    };
+    let matches = &Options::new()
+        .optmulti("L", "", "library directory", "LIB")
+        .optmulti("M", "", "something", "MMMM")
+        .parse(&args)
+        .expect("parse args");
     assert!(matches.opts_present(&["L".to_string()]));
     assert_eq!(matches.opts_str(&["L".to_string()]).unwrap(), "foo");
     assert!(matches.opts_present(&["M".to_string()]));

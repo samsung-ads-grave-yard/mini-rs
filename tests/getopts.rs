@@ -659,6 +659,7 @@ fn test_nospace_conflict() {
     assert_eq!(3, matches.opt_count("v"));
 }
 
+
 #[test]
 fn test_aliases_long_and_short() {
     let args = vec!("-a".to_string(), "--apple".to_string(), "-a".to_string());
@@ -725,7 +726,31 @@ Options:
 
     let usage = opts.usage("Usage: fruits");
 
-    assert!(usage == expected)
+    assert_eq!(usage, expected)
+}
+
+#[test]
+fn test_usage_description_multibyte_handling() {
+    let mut opts = Options::new();
+    opts.optflag("k", "k\u{2013}w\u{2013}",
+        "The word kiwi is normally spelled with two i's");
+    opts.optflag("a", "apple",
+        "This \u{201C}description\u{201D} has some characters that could \
+confuse the line wrapping; an apple costs 0.51€ in some parts of Europe.");
+
+    let expected =
+"Usage: fruits
+
+Options:
+    -k, --k–w–          The word kiwi is normally spelled with two i's
+    -a, --apple         This “description” has some characters that could
+                        confuse the line wrapping; an apple costs 0.51€ in
+                        some parts of Europe.
+";
+
+    let usage = opts.usage("Usage: fruits");
+
+    assert_eq!(usage, expected)
 }
 
 #[test]
@@ -745,7 +770,7 @@ Options:
 ";
 
     let usage = opts.usage("Usage: fruits");
-    assert!(usage == expected)
+    assert_eq!(usage, expected)
 }
 
 #[test]
@@ -756,7 +781,7 @@ fn test_usage_long_only() {
     opts.optflagopt("", "apple", "Apple", "TYPE");
 
     let expected =
-"Usage: fruits
+    "Usage: fruits
 
 Options:
     --kiwi VAL          Kiwi
@@ -765,7 +790,7 @@ Options:
 ";
 
     let usage = opts.usage("Usage: fruits");
-    assert!(usage == expected)
+    assert_eq!(usage, expected)
 }
 
 #[test]
@@ -825,7 +850,7 @@ Options:
 
     let usage = opts.usage("Usage: fruits");
 
-    assert!(usage == expected)
+    assert_eq!(usage, expected)
 }
 
 #[test]
@@ -910,70 +935,4 @@ fn test_undefined_opt_present() {
         Ok(matches) => assert!(!matches.opt_present("undefined")),
         Err(e) => panic!("{}", e)
     }
-}
-
-#[test]
-fn test_opt_default() {
-    let mut opts = Options::new();
-    opts.optflag("h", "help", "Description");
-    opts.optflag("i", "ignore", "Description");
-    opts.optflag("r", "run", "Description");
-    opts.long_only(false);
-
-    let args: Vec<String> = ["-i", "-r", "10"]
-        .iter().map(|x| x.to_string()).collect();
-    let matches = &match opts.parse(&args) {
-        Ok(m) => m,
-        Err(e) => panic!("{}", e)
-    };
-    assert_eq!(matches.opt_default("help", ""), None);
-    assert_eq!(matches.opt_default("i", "def"), Some("def".to_string()));
-}
-
-#[test]
-fn test_opt_get() {
-    let mut opts = Options::new();
-    opts.optflag("h", "help", "Description");
-    opts.optflagopt("i", "ignore", "Description", "true | false");
-    opts.optflagopt("r", "run", "Description", "0 .. 10");
-    opts.optflagopt("p", "percent", "Description", "0.0 .. 10.0");
-    opts.long_only(false);
-
-    let args: Vec<String> = [
-        "-i", "true", "-p", "1.1"
-    ].iter().map(|x| x.to_string()).collect();
-    let matches = &match opts.parse(&args) {
-        Ok(m) => m,
-        Err(e) => panic!("{}", e)
-    };
-    let h_arg = matches.opt_get::<i32>("help");
-    assert_eq!(h_arg, Ok(None));
-    let i_arg = matches.opt_get("i");
-    assert_eq!(i_arg, Ok(Some(true)));
-    let p_arg = matches.opt_get("p");
-    assert_eq!(p_arg, Ok(Some(1.1)));
-}
-
-#[test]
-fn test_opt_get_default() {
-    let mut opts = Options::new();
-    opts.optflag("h", "help", "Description");
-    opts.optflagopt("i", "ignore", "Description", "true | false");
-    opts.optflagopt("r", "run", "Description", "0 .. 10");
-    opts.optflagopt("p", "percent", "Description", "0.0 .. 10.0");
-    opts.long_only(false);
-
-    let args: Vec<String> = [
-        "-i", "true", "-p", "1.1"
-    ].iter().map(|x| x.to_string()).collect();
-    let matches = &match opts.parse(&args) {
-        Ok(m) => m,
-        Err(e) => panic!("{}", e)
-    };
-    let h_arg =matches.opt_get_default("help", 10);
-    assert_eq!(h_arg, Ok(10));
-    let i_arg = matches.opt_get_default("i", false);
-    assert_eq!(i_arg, Ok(true));
-    let p_arg = matches.opt_get_default("p", 10.2);
-    assert_eq!(p_arg, Ok(1.1));
 }

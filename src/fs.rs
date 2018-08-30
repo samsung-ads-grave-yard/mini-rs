@@ -33,18 +33,27 @@ pub struct TempFile {
 impl TempFile {
     pub fn new() -> io::Result<Self> {
         let mut rng = Rng::new();
-        let path = temp_dir()
-            .join(format!("file{}", rng.next()));
-        File::create(&path)?;
+        let mut path = None;
+        for _ in 0..50 {
+            let tempfile = temp_dir()
+                .join(format!("file{}", rng.next()));
+            if !tempfile.exists() {
+                File::create(&tempfile)?;
+                path = Some(tempfile);
+                break;
+            }
+        }
         Ok(Self {
-            path,
+            path: path.ok_or(io::Error::from(io::ErrorKind::AlreadyExists))?,
         })
     }
 }
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = remove_file(&self.path);
+        if let Err(error) = remove_file(&self.path) {
+            eprintln!("Cannot remove file: {}", error);
+        }
     }
 }
 
@@ -56,7 +65,7 @@ mod tests {
     fn test_temp_dir_exists() {
         let path;
         {
-            let temp_dir = TempFile::new().expect("new temp dir");
+            let temp_dir = TempFile::new().expect("new temp file");
             path = temp_dir.path.clone();
             assert!(path.is_file());
         }

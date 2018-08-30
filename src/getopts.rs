@@ -112,14 +112,12 @@ use std::result;
 /// A description of the options that a program can handle.
 pub struct Options {
     grps: Vec<OptGroup>,
-    parsing_style : ParsingStyle,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             grps: Vec::new(),
-            parsing_style: ParsingStyle::FloatingFrees,
         }
     }
 }
@@ -128,12 +126,6 @@ impl Options {
     /// Create a blank set of options.
     pub fn new() -> Options {
         Self::default()
-    }
-
-    /// Set the parsing style.
-    pub fn parsing_style(&mut self, style: ParsingStyle) -> &mut Options {
-        self.parsing_style = style;
-        self
     }
 
     /// Create a generic option group, stating all parameters explicitly.
@@ -300,13 +292,6 @@ impl Options {
             if !is_arg(&cur) {
                 // If it's not an argument starting with `-`, it's a free argument.
                 free.push(cur);
-                match self.parsing_style {
-                    ParsingStyle::FloatingFrees => {},
-                    ParsingStyle::StopAtFirstFree => {
-                        free.extend(args);
-                        break;
-                    }
-                }
             } else if cur == "--" {
                 // After `--`, the rest of the arguments are free arguments.
                 free.extend(args);
@@ -547,16 +532,6 @@ fn validate_names(short_name: &str, long_name: &str) {
     assert!(len == 0 || len > 1,
             "the long_name (second argument) should be longer than a single \
              character, or an empty string for none");
-}
-
-/// What parsing style to use when parsing arguments.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ParsingStyle {
-    /// Flags and "free" arguments can be freely inter-mixed.
-    FloatingFrees,
-    /// As soon as a "free" argument (i.e. non-flag) is encountered, stop
-    /// considering any remaining arguments as flags.
-    StopAtFirstFree
 }
 
 /// Name of an option. Either a string or a single char.

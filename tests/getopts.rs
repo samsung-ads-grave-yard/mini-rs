@@ -1,6 +1,6 @@
 extern crate core;
 
-use core::getopts::{Options, ParsingStyle};
+use core::getopts::Options;
 use core::getopts::Fail::*;
 
 // Tests for reqopt
@@ -524,56 +524,6 @@ fn test_combined() {
         assert!(pair[0] == "-A B");
         assert!(pair[1] == "-60 70");
         assert!((!m.opt_present("notpresent")));
-      }
-      _ => panic!()
-    }
-}
-
-#[test]
-fn test_mixed_stop() {
-    let args =
-        vec!("-a".to_string(),
-             "b".to_string(),
-             "-c".to_string(),
-             "d".to_string());
-    match Options::new()
-          .parsing_style(ParsingStyle::StopAtFirstFree)
-          .optflag("a", "", "")
-          .optopt("c", "", "", "")
-          .parse(&args) {
-      Ok(ref m) => {
-        println!("{}", m.opt_present("c"));
-        assert!(m.opt_present("a"));
-        assert!(!m.opt_present("c"));
-        assert_eq!(m.free.len(), 3);
-        assert_eq!(m.free[0], "b");
-        assert_eq!(m.free[1], "-c");
-        assert_eq!(m.free[2], "d");
-      }
-      _ => panic!()
-    }
-}
-
-#[test]
-fn test_mixed_stop_hyphen() {
-    let args =
-        vec!("-a".to_string(),
-             "-".to_string(),
-             "-c".to_string(),
-             "d".to_string());
-    match Options::new()
-          .parsing_style(ParsingStyle::StopAtFirstFree)
-          .optflag("a", "", "")
-          .optopt("c", "", "", "")
-          .parse(&args) {
-      Ok(ref m) => {
-        println!("{}", m.opt_present("c"));
-        assert!(m.opt_present("a"));
-        assert!(!m.opt_present("c"));
-        assert_eq!(m.free.len(), 3);
-        assert_eq!(m.free[0], "-");
-        assert_eq!(m.free[1], "-c");
-        assert_eq!(m.free[2], "d");
       }
       _ => panic!()
     }

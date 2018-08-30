@@ -116,14 +116,20 @@ pub struct Options {
     long_only: bool
 }
 
-impl Options {
-    /// Create a blank set of options.
-    pub fn new() -> Options {
-        Options {
+impl Default for Options {
+    fn default() -> Self {
+        Self {
             grps: Vec::new(),
             parsing_style: ParsingStyle::FloatingFrees,
             long_only: false
         }
+    }
+}
+
+impl Options {
+    /// Create a blank set of options.
+    pub fn new() -> Options {
+        Self::default()
     }
 
     /// Set the parsing style.
@@ -154,8 +160,8 @@ impl Options {
             long_name: long_name.to_string(),
             hint: hint.to_string(),
             desc: desc.to_string(),
-            hasarg: hasarg,
-            occur: occur
+            hasarg,
+            occur
         });
         self
     }
@@ -369,7 +375,7 @@ impl Options {
                     }
                 }
                 let mut name_pos = 0;
-                for nm in names.iter() {
+                for nm in &names {
                     name_pos += 1;
                     let optid = match find_opt(&opts, &nm) {
                       Some(id) => id,
@@ -377,7 +383,7 @@ impl Options {
                     };
                     match opts[optid].hasarg {
                       No => {
-                        if name_pos == names.len() && !i_arg.is_none() {
+                        if name_pos == names.len() && i_arg.is_some() {
                             return Err(UnexpectedArgument(nm.to_string()));
                         }
                         vals[optid].push(Given);
@@ -420,9 +426,9 @@ impl Options {
             }
         }
         Ok(Matches {
-            opts: opts,
-            vals: vals,
-            free: free
+            opts,
+            vals,
+            free
         })
     }
 
@@ -454,7 +460,7 @@ impl Options {
         let desc_sep = format!("\n{}", repeat(" ").take(24).collect::<String>());
 
         let any_short = self.grps.iter().any(|optref| {
-            optref.short_name.len() > 0
+            !optref.short_name.is_empty()
         });
 
         let rows = self.grps.iter().map(move |optref| {
@@ -477,7 +483,7 @@ impl Options {
                 1 => {
                     row.push('-');
                     row.push_str(&short_name);
-                    if long_name.len() > 0 {
+                    if !long_name.is_empty() {
                         row.push_str(", ");
                     } else {
                         // Only a single space here, so that any
@@ -721,20 +727,20 @@ impl OptGroup {
             (0,0) => panic!("this long-format option was given no name"),
             (0,_) => Opt {
                 name: Long(long_name),
-                hasarg: hasarg,
-                occur: occur,
+                hasarg,
+                occur,
                 aliases: Vec::new()
             },
             (1,0) => Opt {
                 name: Short(short_name.as_bytes()[0] as char),
-                hasarg: hasarg,
-                occur: occur,
+                hasarg,
+                occur,
                 aliases: Vec::new()
             },
             (1,_) => Opt {
                 name: Long(long_name),
-                hasarg: hasarg,
-                occur: occur,
+                hasarg,
+                occur,
                 aliases: vec!(
                     Opt {
                         name: Short(short_name.as_bytes()[0] as char),
@@ -845,7 +851,7 @@ fn find_opt(opts: &[Opt], nm: &Name) -> Option<usize> {
 
     // Search in aliases.
     for candidate in opts.iter() {
-        if candidate.aliases.iter().position(|opt| &opt.name == nm).is_some() {
+        if candidate.aliases.iter().any(|opt| &opt.name == nm) {
             return opts.iter().position(|opt| opt.name == candidate.name);
         }
     }
@@ -883,7 +889,7 @@ fn format_option(opt: &OptGroup) -> String {
     }
 
     // Use short_name if possible, but fall back to long_name.
-    if opt.short_name.len() > 0 {
+    if !opt.short_name.is_empty() {
         line.push('-');
         line.push_str(&opt.short_name);
     } else {
@@ -1016,7 +1022,7 @@ fn each_split_within<'a, F>(ss: &'a str, lim: usize, mut it: F)
         machine(&mut cont, &mut state, (fake_i, ' '));
         fake_i += 1;
     }
-    return cont;
+    cont
 }
 
 #[test]
@@ -1040,8 +1046,7 @@ fn test_split_within() {
 
 #[cfg(test)]
 mod tests {
-    use super::{HasArg, Name, Occur, Opt, Options, ParsingStyle};
-    use super::Fail::*;
+    use super::{HasArg, Name, Occur, Opt, Options};
 
     #[test]
     fn test_long_to_short() {

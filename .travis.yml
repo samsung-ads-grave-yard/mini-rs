@@ -9,6 +9,9 @@ addons:
       - libdw-dev
       - binutils-dev
 
+before_install:
+    - rustup component add clippy-preview --toolchain=nightly
+
 env:
   global:
     - RUST_BACKTRACE=1
@@ -30,3 +33,5 @@ matrix:
               - cargo build
               - cargo test
               - cargo test --ignored
+              - cargo clippy
+              - cargo clippy --tests

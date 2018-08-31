@@ -75,23 +75,37 @@ fn test_optopt() {
     let mut opts = Options::new();
     opts.optopt("t", "test", "testing", "TEST");
     match opts.parse(&long_args) {
-      Ok(ref m) => {
-        assert!(m.opt_present("test"));
-        assert_eq!(m.opt_str("test").unwrap(), "20");
-        assert!((m.opt_present("t")));
-        assert_eq!(m.opt_str("t").unwrap(), "20");
-      }
-      _ => panic!()
+        Ok(ref m) => {
+            assert!(m.opt_present("test"));
+            assert_eq!(m.opt_str("test").unwrap(), "20");
+            assert!((m.opt_present("t")));
+            assert_eq!(m.opt_str("t").unwrap(), "20");
+        }
+        _ => panic!()
     }
+
+    let long_args_space = vec!("--test".to_string(), "20".to_string());
+    let mut opts = Options::new();
+    opts.optopt("t", "test", "testing", "TEST");
+    match opts.parse(&long_args_space) {
+        Ok(ref m) => {
+            assert!(m.opt_present("test"));
+            assert_eq!(m.opt_str("test").unwrap(), "20");
+            assert!((m.opt_present("t")));
+            assert_eq!(m.opt_str("t").unwrap(), "20");
+        }
+        _ => panic!()
+    }
+
     let short_args = vec!("-t".to_string(), "20".to_string());
     match opts.parse(&short_args) {
-      Ok(ref m) => {
-        assert!((m.opt_present("test")));
-        assert_eq!(m.opt_str("test").unwrap(), "20");
-        assert!((m.opt_present("t")));
-        assert_eq!(m.opt_str("t").unwrap(), "20");
-      }
-      _ => panic!()
+        Ok(ref m) => {
+            assert!((m.opt_present("test")));
+            assert_eq!(m.opt_str("test").unwrap(), "20");
+            assert!((m.opt_present("t")));
+            assert_eq!(m.opt_str("t").unwrap(), "20");
+        }
+        _ => panic!()
     }
 }
 

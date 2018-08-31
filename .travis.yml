@@ -35,3 +35,4 @@ matrix:
               - cargo test --ignored
               - cargo clippy
               - cargo clippy --tests
+

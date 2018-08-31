@@ -20,7 +20,7 @@
  */
 
 use std::env::temp_dir;
-use std::fs::{File, remove_file};
+use std::fs::{OpenOptions, remove_file};
 use std::io;
 use std::path::PathBuf;
 
@@ -37,8 +37,11 @@ impl TempFile {
         for _ in 0..50 {
             let tempfile = temp_dir()
                 .join(format!("file{}", rng.next()));
-            if !tempfile.exists() {
-                File::create(&tempfile)?;
+            if let Ok(_) = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tempfile)
+            {
                 path = Some(tempfile);
                 break;
             }

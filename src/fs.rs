@@ -32,11 +32,15 @@ pub struct TempFile {
 
 impl TempFile {
     pub fn new() -> io::Result<Self> {
+        Self::with_prefix("file")
+    }
+
+    pub fn with_prefix(prefix: &str) -> io::Result<Self> {
         let mut rng = Rng::new();
         let mut path = None;
         for _ in 0..50 {
             let tempfile = temp_dir()
-                .join(format!("file{}", rng.next()));
+                .join(format!("{}.{}", prefix, rng.next()));
             if let Ok(_) = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -65,11 +69,20 @@ mod tests {
     use super::TempFile;
 
     #[test]
-    fn test_temp_dir_exists() {
+    fn test_temp_file_exists() {
         let path;
         {
-            let temp_dir = TempFile::new().expect("new temp file");
-            path = temp_dir.path.clone();
+            let temp_file = TempFile::new().expect("new temp file");
+            path = temp_file.path.clone();
+            assert!(path.is_file());
+        }
+        assert!(!path.is_file());
+        assert!(!path.exists());
+
+        let path;
+        {
+            let temp_file = TempFile::with_prefix("mini-prefix").expect("new temp file");
+            path = temp_file.path.clone();
             assert!(path.is_file());
         }
         assert!(!path.is_file());

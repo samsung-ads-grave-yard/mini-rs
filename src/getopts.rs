@@ -123,12 +123,12 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Create a blank set of options.
+    /// Creates a blank set of options.
     pub fn new() -> Options {
         Self::default()
     }
 
-    /// Create a generic option group, stating all parameters explicitly.
+    /// Creates a generic option group, stating all parameters explicitly.
     pub fn opt(&mut self, short_name: &str, long_name: &str, desc: &str,
                        hint: &str, hasarg: HasArg, occur: Occur) -> &mut Options {
         validate_names(short_name, long_name);
@@ -143,7 +143,7 @@ impl Options {
         self
     }
 
-    /// Create a long option that is optional and does not take an argument.
+    /// Creates an option that is optional and does not take an argument.
     ///
     /// * `short_name` - e.g. `"h"` for a `-h` option, or `""` for none
     /// * `long_name` - e.g. `"help"` for a `--help` option, or `""` for none
@@ -162,7 +162,7 @@ impl Options {
         self
     }
 
-    /// Create a long option that can occur more than once and does not
+    /// Creates a long option that can occur more than once and does not
     /// take an argument.
     ///
     /// * `short_name` - e.g. `"h"` for a `-h` option, or `""` for none
@@ -182,7 +182,7 @@ impl Options {
         self
     }
 
-    /// Create a long option that is optional and takes an optional argument.
+    /// Creates a long option that is optional and takes an optional argument.
     ///
     /// * `short_name` - e.g. `"h"` for a `-h` option, or `""` for none
     /// * `long_name` - e.g. `"help"` for a `--help` option, or `""` for none
@@ -203,7 +203,7 @@ impl Options {
         self
     }
 
-    /// Create a long option that is optional, takes an argument, and may occur
+    /// Creates a long option that is optional, takes an argument, and may occur
     /// multiple times.
     ///
     /// * `short_name` - e.g. `"h"` for a `-h` option, or `""` for none
@@ -225,7 +225,7 @@ impl Options {
         self
     }
 
-    /// Create a long option that is optional and takes an argument.
+    /// Creates a long option that is optional and takes an argument.
     ///
     /// * `short_name` - e.g. `"h"` for a `-h` option, or `""` for none
     /// * `long_name` - e.g. `"help"` for a `--help` option, or `""` for none
@@ -246,7 +246,7 @@ impl Options {
         self
     }
 
-    /// Create a long option that is required and takes an argument.
+    /// Creates a long option that is required and takes an argument.
     ///
     /// * `short_name` - e.g. `"h"` for a `-h` option, or `""` for none
     /// * `long_name` - e.g. `"help"` for a `--help` option, or `""` for none
@@ -267,7 +267,7 @@ impl Options {
         self
     }
 
-    /// Parse command line arguments according to the provided options.
+    /// Parses command line arguments according to the provided options.
     ///
     /// On success returns `Ok(Matches)`. Use methods such as `opt_present`
     /// `opt_str`, etc. to interrogate results.
@@ -400,7 +400,7 @@ impl Options {
         })
     }
 
-    /// Derive a short one-line usage summary from a set of long options.
+    /// Derives a short one-line usage summary from a set of long options.
     pub fn short_usage(&self, program_name: &str) -> String {
         let mut line = format!("Usage: {} ", program_name);
         line.push_str(&self.grps.iter()
@@ -410,20 +410,19 @@ impl Options {
         line
     }
 
-
-    /// Derive a formatted message from a set of options.
+    /// Derives a formatted message from a set of options.
     pub fn usage(&self, brief: &str) -> String {
         self.usage_with_format(|opts|
             format!("{}\n\nOptions:\n{}\n", brief, opts.collect::<Vec<String>>().join("\n")))
     }
 
-    /// Derive a custom formatted message from a set of options. The formatted options provided to
+    /// Derives a custom formatted message from a set of options. The formatted options provided to
     /// a closure as an iterator.
     pub fn usage_with_format<F: FnMut(&mut Iterator<Item=String>) -> String>(&self, mut formatter: F) -> String {
         formatter(&mut self.usage_items())
     }
 
-    /// Derive usage items from a set of options.
+    /// Derives usage items from a set of options.
     fn usage_items<'a>(&'a self) -> Box<Iterator<Item=String> + 'a> {
         let desc_sep = format!("\n{}", repeat(" ").take(24).collect::<String>());
 

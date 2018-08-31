@@ -32,7 +32,7 @@ pub struct Rng {
 impl Default for Rng {
     fn default() -> Self {
         match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(res) => Self::seed_with(res.as_secs() + res.subsec_nanos() as u64),
+            Ok(res) => Self::seed_with(res.as_secs() + u64::from(res.subsec_nanos())),
             Err(_) => Self::seed_with(6_364_136_223_846_793_005)
         }
     }

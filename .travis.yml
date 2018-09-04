@@ -1,0 +1,40 @@
+sudo: required
+dist: trusty
+language: rust
+addons:
+  apt:
+    packages:
+      - libcurl4-openssl-dev
+      - libelf-dev
+      - libdw-dev
+      - binutils-dev
+
+before_install:
+    - rustup toolchain add nightly
+    - rustup component add clippy-preview --toolchain=nightly
+
+env:
+  global:
+    - RUST_BACKTRACE=1
+
+matrix:
+    include:
+        - rust: stable
+          script:
+              - cargo build
+              - cargo test
+              - cargo test -- --ignored
+        - rust: beta
+          script:
+              - cargo build
+              - cargo test
+              - cargo test -- --ignored
+        - rust: nightly
+          script:
+              - cargo build
+              - cargo test
+              - cargo test -- --ignored
+              - cargo clippy --tests -- -Dwarnings
+
+notifications:
+    email: false

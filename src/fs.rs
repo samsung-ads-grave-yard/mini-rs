@@ -41,7 +41,7 @@ impl TempFile {
         let mut path = None;
         for _ in 0..50 {
             let tempfile = temp_dir()
-                .join(format!("{}.{}", prefix, rng.next()));
+                .join(format!("{}.{}", prefix, rng.gen_int()));
             if let Ok(file) = OpenOptions::new()
                 .write(true)
                 .create_new(true)

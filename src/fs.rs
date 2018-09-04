@@ -22,7 +22,7 @@
 use std::env::temp_dir;
 use std::fs::{OpenOptions, remove_file};
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use rand::Rng;
@@ -42,12 +42,13 @@ impl TempFile {
         for _ in 0..50 {
             let tempfile = temp_dir()
                 .join(format!("{}.{}", prefix, rng.gen_int()));
-            if let Ok(file) = OpenOptions::new()
+            if OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .mode(0o600)
                 .open(&tempfile)
+                .is_ok()
             {
-                file.metadata()?.permissions().set_mode(0o600);
                 path = Some(tempfile);
                 break;
             }

@@ -50,6 +50,7 @@ impl Rng {
         v as u32
     }
 
+    /// Creates a new pseudo-random with a custom seed.
     pub fn seed_with(seed: u64) -> Self {
         // We xor the seed with a randomly chosen number to avoid ending up with
         // a 0 state which would be bad.
@@ -59,18 +60,22 @@ impl Rng {
         }
     }
 
+    /// Creates a new pseudo-random number generator with default seed.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Generates an integer.
     pub fn gen_int(&mut self) -> u32 {
         self.pcg32()
     }
 
+    /// Generates an integer between `min` (included) and `max` (excluded), i.e. [min, max).
     pub fn gen_int_interval(&mut self, min: u32, max: u32) -> u32 {
         (self.pcg32() % (max - min)) + min
     }
 
+    /// Generates a floating-point number between 0.0 and 1.0, both included.
     pub fn gen_double_interval_unit(&mut self) -> f64 {
         let max = f64::from(u32::MAX);
         let n = f64::from(self.gen_int());

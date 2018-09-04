@@ -63,18 +63,17 @@ impl Rng {
         Self::default()
     }
 
-    #[cfg_attr(feature = "cargo-clippy", allow(should_implement_trait))]
-    pub fn next(&mut self) -> u32 {
+    pub fn gen_int(&mut self) -> u32 {
         self.pcg32()
     }
 
-    pub fn next_in_range(&mut self, min: u32, max: u32) -> u32 {
+    pub fn gen_int_interval(&mut self, min: u32, max: u32) -> u32 {
         (self.pcg32() % (max - min)) + min
     }
 
-    pub fn next_double(&mut self) -> f64 {
+    pub fn gen_double_interval_unit(&mut self) -> f64 {
         let max = f64::from(u32::MAX);
-        let n = f64::from(self.next());
+        let n = f64::from(self.gen_int());
         n / max
     }
 }
@@ -90,7 +89,7 @@ mod tests {
         let mut rng = Rng::new();
         let mut numbers = vec![];
         for _ in 0..1_000_000 {
-            numbers.push(rng.next());
+            numbers.push(rng.gen_int());
         }
         let (min, max) = {
             (numbers.iter().cloned().min().expect("minimum"), numbers.iter().cloned().max().expect("maximum"))
@@ -108,7 +107,7 @@ mod tests {
         let mut values = vec![0; capacity];
         let end = capacity * 25;
         for _ in 0..end {
-            let index = rng.next() as usize % values.len();
+            let index = rng.gen_int() as usize % values.len();
             values[index] += 1;
         }
 

@@ -54,7 +54,7 @@ impl TempFile {
             }
         }
         Ok(Self {
-            path: path.ok_or(io::Error::from(io::ErrorKind::AlreadyExists))?,
+            path: path.ok_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists))?,
         })
     }
 }

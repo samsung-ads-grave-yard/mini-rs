@@ -50,6 +50,7 @@ impl Rng {
         v as u32
     }
 
+    /// Creates a new pseudo-random with a custom seed.
     pub fn seed_with(seed: u64) -> Self {
         // We xor the seed with a randomly chosen number to avoid ending up with
         // a 0 state which would be bad.
@@ -59,22 +60,25 @@ impl Rng {
         }
     }
 
+    /// Creates a new pseudo-random number generator with default seed.
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[cfg_attr(feature = "cargo-clippy", allow(should_implement_trait))]
-    pub fn next(&mut self) -> u32 {
+    /// Generates an integer.
+    pub fn gen_int(&mut self) -> u32 {
         self.pcg32()
     }
 
-    pub fn next_in_range(&mut self, min: u32, max: u32) -> u32 {
+    /// Generates an integer between `min` (included) and `max` (excluded), i.e. [min, max).
+    pub fn gen_int_interval(&mut self, min: u32, max: u32) -> u32 {
         (self.pcg32() % (max - min)) + min
     }
 
-    pub fn next_double(&mut self) -> f64 {
+    /// Generates a floating-point number between 0.0 and 1.0, both included.
+    pub fn gen_double_interval_unit(&mut self) -> f64 {
         let max = f64::from(u32::MAX);
-        let n = f64::from(self.next());
+        let n = f64::from(self.gen_int());
         n / max
     }
 }
@@ -90,7 +94,7 @@ mod tests {
         let mut rng = Rng::new();
         let mut numbers = vec![];
         for _ in 0..1_000_000 {
-            numbers.push(rng.next());
+            numbers.push(rng.gen_int());
         }
         let (min, max) = {
             (numbers.iter().cloned().min().expect("minimum"), numbers.iter().cloned().max().expect("maximum"))
@@ -108,7 +112,7 @@ mod tests {
         let mut values = vec![0; capacity];
         let end = capacity * 25;
         for _ in 0..end {
-            let index = rng.next() as usize % values.len();
+            let index = rng.gen_int() as usize % values.len();
             values[index] += 1;
         }
 

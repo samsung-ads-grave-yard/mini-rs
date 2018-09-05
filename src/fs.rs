@@ -19,43 +19,52 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+//! Provide file-system helpers like a way to create a temporary file.
+
 use std::env::temp_dir;
-use std::fs::{OpenOptions, remove_file};
+use std::fs::{File, OpenOptions, remove_file};
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use rand::Rng;
 
+/// A temporary file which is deleted when it goes out of scope.
 pub struct TempFile {
+    file: File,
     path: PathBuf,
 }
 
 impl TempFile {
+    /// Creates a new temporary file with a default prefix.
     pub fn new() -> io::Result<Self> {
         Self::with_prefix("file")
     }
 
+    /// Gets the file handle of the temporary file.
+    pub fn get(&self) -> &File {
+        &self.file
+    }
+
+    /// Creates a new temporary file with the specified prefix.
     pub fn with_prefix(prefix: &str) -> io::Result<Self> {
         let mut rng = Rng::new();
-        let mut path = None;
         for _ in 0..50 {
             let tempfile = temp_dir()
                 .join(format!("{}.{}", prefix, rng.gen_int()));
-            if OpenOptions::new()
+            if let Ok(file) = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .open(&tempfile)
-                .is_ok()
             {
-                path = Some(tempfile);
-                break;
+                return Ok(Self {
+                    file,
+                    path: tempfile,
+                })
             }
         }
-        Ok(Self {
-            path: path.ok_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists))?,
-        })
+        Err(io::Error::from(io::ErrorKind::AlreadyExists))
     }
 }
 
@@ -69,6 +78,8 @@ impl Drop for TempFile {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::TempFile;
 
     #[test]
@@ -78,6 +89,7 @@ mod tests {
             let temp_file = TempFile::new().expect("new temp file");
             path = temp_file.path.clone();
             assert!(path.is_file());
+            writeln!(temp_file.get(), "test");
         }
         assert!(!path.is_file());
         assert!(!path.exists());

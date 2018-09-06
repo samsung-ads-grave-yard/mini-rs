@@ -33,4 +33,5 @@
 // Later:
 // * metrics (probably trivial-statsd)
 
+pub mod fs;
 pub mod rand;

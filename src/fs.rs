@@ -53,6 +53,7 @@ impl TempFile {
             let tempfile = temp_dir()
                 .join(format!("{}.{}", prefix, rng.gen_int()));
             if let Ok(file) = OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create_new(true)
                 .mode(0o600)

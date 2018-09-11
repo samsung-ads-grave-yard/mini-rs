@@ -215,6 +215,8 @@ mod tests {
         let _datetime = DateTime::now();
     }
 
+    // TODO: switch to clippy::cyclomatic_complexity when #44690 is fixed.
+    #[allow(unknown_lints, renamed_and_removed_lints, cyclomatic_complexity)]
     #[test]
     fn format() {
         let datetime = DateTime {

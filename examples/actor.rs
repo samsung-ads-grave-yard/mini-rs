@@ -20,7 +20,7 @@ enum Msg {
 fn main() {
     let sum = Arc::new(AtomicUsize::new(0));
     let state = Arc::clone(&sum);
-    let actor_handler = move |current: &Pid<Msg>, msg: Option<Msg>| {
+    let actor_handler = move |current: &Pid<_>, msg: Option<Msg>| {
         match msg {
             Some(_) => {
                 state.fetch_add(1, Ordering::SeqCst);
@@ -39,7 +39,7 @@ fn main() {
 
     eprintln!("Spawing 1,000,000 actors");
 
-    let mut process_queue = ProcessQueue::new(1024, 4);
+    let process_queue = ProcessQueue::new(1024, 4);
 
     for _ in 0..MAX_ACTOR_COUNT {
         while process_queue.spawn(SpawnParameters {

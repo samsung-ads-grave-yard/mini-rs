@@ -52,6 +52,17 @@ pub struct Pid<MSG> {
     _marker: PhantomData<MSG>,
 }
 
+impl<MSG> Clone for Pid<MSG> {
+    fn clone(&self) -> Self {
+        Self {
+            dest_processes: self.dest_processes.clone(),
+            id: self.id,
+            generation: AtomicUsize::new(self.generation.load(Ordering::SeqCst)),
+            _marker: PhantomData,
+        }
+    }
+}
+
 pub struct Process {
     id: usize,
     max_message_per_cycle: usize,
@@ -108,7 +119,7 @@ pub struct ProcessQueue {
 }
 
 impl ProcessQueue {
-    pub fn new(process_capacity: usize, thread_count: usize) -> Self {
+    pub fn new(process_capacity: usize, thread_count: usize) -> Arc<Self> {
         let mut processes = Vec::with_capacity(process_capacity);
         let mut shared_processes = Vec::with_capacity(process_capacity);
         let process_pool = Arc::new(BoundedQueue::new(process_capacity));
@@ -172,14 +183,14 @@ impl ProcessQueue {
             }));
         }
 
-        Self {
+        Arc::new(Self {
             process_capacity,
             process_pool,
             processes,
             shared_processes: Arc::new(shared_processes.into_boxed_slice()),
             shared_pq: Arc::clone(&shared_pq),
             threads,
-        }
+        })
     }
 
     fn get_pid<MSG>(&self, id: usize) -> Pid<MSG> {
@@ -245,7 +256,7 @@ impl ProcessQueue {
         }
     }
 
-    pub fn spawn<F, MSG>(&mut self, params: SpawnParameters<F>) -> Option<Pid<MSG>>
+    pub fn spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Option<Pid<MSG>>
     where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
           MSG: Send + 'static
     {
@@ -260,12 +271,13 @@ impl ProcessQueue {
                 if let Some(current_process_id) = self.process_pool.pop() {
                     process_id = current_process_id;
                     current_pid = self.get_pid(process_id); // TODO: make sure it's called at the right place.
-                    process = unsafe { self.processes.get_mut(current_process_id).get_mut_as::<Process>() };
+                    process = unsafe { processes.get_mut(current_process_id).get_mut_as::<Process>() };
                     break;
                 }
                 thread::yield_now();
             }
 
+            let mut processes = self.processes.clone();
             let parent = CURRENT_PROCESS_ID.with(|current_process_id| {
                 *current_process_id.borrow()
             });

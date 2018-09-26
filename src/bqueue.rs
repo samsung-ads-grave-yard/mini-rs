@@ -104,28 +104,29 @@ impl<T> Drop for BoundedQueue<T> {
 mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
 
     use super::BoundedQueue;
 
     #[test]
     fn test_single_thread() {
         let queue = BoundedQueue::new(3);
-        queue.push(10);
+        queue.push(10).expect("push");
         assert_eq!(queue.pop(), Some(10));
         assert_eq!(queue.pop(), None);
 
-        queue.push(11);
-        queue.push(12);
-        queue.push(13);
+        queue.push(11).expect("push");
+        queue.push(12).expect("push");
+        queue.push(13).expect("push");
         assert_eq!(queue.pop(), Some(11));
         assert_eq!(queue.pop(), Some(12));
         assert_eq!(queue.pop(), Some(13));
         assert_eq!(queue.pop(), None);
 
-        queue.push(14);
-        queue.push(15);
+        queue.push(14).expect("push");
+        queue.push(15).expect("push");
         assert_eq!(queue.pop(), Some(14));
-        queue.push(16);
+        queue.push(16).expect("push");
         assert_eq!(queue.pop(), Some(15));
         assert_eq!(queue.pop(), Some(16));
         assert_eq!(queue.pop(), None);
@@ -151,7 +152,7 @@ mod tests {
                         }
                     }
                 }
-                thread::sleep_ms(1000);
+                thread::sleep(Duration::from_secs(1));
                 for _ in 0..950_000 {
                     loop {
                         if let Some(element) = queue.pop() {
@@ -168,7 +169,7 @@ mod tests {
             let queue = queue.clone();
             thread::spawn(move || {
                 for i in 0..100_000 {
-                    queue.push(i);
+                    queue.push(i).expect("push");
                 }
             })
         };
@@ -177,22 +178,22 @@ mod tests {
             let queue = queue.clone();
             thread::spawn(move || {
                 for i in 100_000..1_000_000 {
-                    queue.push(i);
+                    queue.push(i).expect("push");
                 }
             })
         };
 
         handle.join().expect("join");
-        handle2.join();
-        handle3.join();
+        handle2.join().expect("join");
+        handle3.join().expect("join");
 
         let mut results = results.lock().expect("lock");
         assert_eq!(results.len(), 1_000_000);
 
         results.sort();
 
-        for i in 0..1_000_000 {
-            assert_eq!(results[i], i);
+        for (i, &element) in results.iter().enumerate() {
+            assert_eq!(element, i);
         }
     }
 
@@ -241,7 +242,7 @@ mod tests {
             let queue = queue.clone();
             thread::spawn(move || {
                 for i in 0..100_000 {
-                    queue.push(i);
+                    queue.push(i).expect("push");
                 }
             })
         };
@@ -250,15 +251,15 @@ mod tests {
             let queue = queue.clone();
             thread::spawn(move || {
                 for i in 100_000..1_000_000 {
-                    queue.push(i);
+                    queue.push(i).expect("push");
                 }
             })
         };
 
         handle.join().expect("join");
-        handle2.join();
-        handle3.join();
-        handle4.join();
+        handle2.join().expect("join");
+        handle3.join().expect("join");
+        handle4.join().expect("join");
 
         let mut results = results.lock().expect("lock");
         let mut results2 = results2.lock().expect("lock");
@@ -267,8 +268,8 @@ mod tests {
         results.append(&mut results2);
         results.sort();
 
-        for i in 0..1_000_000 {
-            assert_eq!(results[i], i);
+        for (i, &element) in results.iter().enumerate() {
+            assert_eq!(element, i);
         }
     }
 }

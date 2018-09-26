@@ -1,5 +1,6 @@
 use std::cell::{RefCell, UnsafeCell};
 use std::cmp;
+use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{
@@ -23,6 +24,7 @@ enum Action {
     Other, // TODO: choose better name.
 }
 
+#[derive(Debug)]
 pub enum Error<MSG> {
     ActorIsDead,
     SendFail(MSG),
@@ -50,6 +52,13 @@ pub struct Pid<MSG> {
     id: usize,
     generation: AtomicUsize,
     _marker: PhantomData<MSG>,
+}
+
+impl<MSG> Debug for Pid<MSG> {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        write!(formatter, "Pid {:?}, Id: {}", &**self.dest_processes as *const _, self.id)?;
+        Ok(())
+    }
 }
 
 impl<MSG> Clone for Pid<MSG> {

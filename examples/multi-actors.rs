@@ -15,14 +15,7 @@ use self::Msg1::*;
 use self::Msg2::*;
 use self::Msg3::*;
 
-macro_rules! expect {
-    ($expr:expr) => {
-        if let Err(_) =  $expr {
-            panic!("expect");
-        }
-    };
-}
-
+#[derive(Debug)]
 enum Msg1 {
     Add(i64),
     AddToState,
@@ -35,6 +28,7 @@ enum Msg2 {
     SubFromState,
 }
 
+#[derive(Debug)]
 enum Msg3 {
     Pid1(Pid<Msg1>),
 }
@@ -45,8 +39,8 @@ fn main() {
     let actor_handler3 = |_current: &Pid<_>, msg: Option<Msg3>| {
         match msg {
             Some(Pid1(pid)) => {
-                expect!(ProcessQueue::send_message(&pid, Add(1)));
-                expect!(ProcessQueue::send_message(&pid, AddToState));
+                ProcessQueue::send_message(&pid, Add(1)).expect("send message");
+                ProcessQueue::send_message(&pid, AddToState).expect("send message");
                 ProcessContinuation::Stop
             },
             _ => ProcessContinuation::WaitMessage,
@@ -79,7 +73,7 @@ fn main() {
                                     None => (),
                                 }
                             }
-                            expect!(ProcessQueue::send_message(&pid3, Pid1(current.clone())));
+                            ProcessQueue::send_message(&pid3, Pid1(current.clone())).expect("send message");
                         }
                         state1 += num;
                         ProcessContinuation::WaitMessage
@@ -96,8 +90,8 @@ fn main() {
             },
             None => {
                 if let Some(ref pid) = pid2 {
-                    expect!(ProcessQueue::send_message(pid, Sub(35)));
-                    expect!(ProcessQueue::send_message(pid, SubFromState));
+                    ProcessQueue::send_message(pid, Sub(35)).expect("send message");
+                    ProcessQueue::send_message(pid, SubFromState).expect("send message");
                 }
                 ProcessContinuation::WaitMessage
             },
@@ -128,7 +122,7 @@ fn main() {
                 match msg {
                     Sub(num) => {
                         state2 -= num;
-                        expect!(ProcessQueue::send_message(&pid1, Add(5)));
+                        ProcessQueue::send_message(&pid1, Add(5)).expect("send message");
                         ProcessContinuation::WaitMessage
                     },
                     SubFromState => {
@@ -138,8 +132,8 @@ fn main() {
                 }
             },
             None => {
-                expect!(ProcessQueue::send_message(&pid1, Pid2(current.clone())));
-                expect!(ProcessQueue::send_message(&pid1, Add(50)));
+                ProcessQueue::send_message(&pid1, Pid2(current.clone())).expect("send message");
+                ProcessQueue::send_message(&pid1, Add(50)).expect("send message");
                 ProcessContinuation::WaitMessage
             },
         }

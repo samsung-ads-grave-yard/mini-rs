@@ -33,6 +33,8 @@
 // Later:
 // * metrics (probably trivial-statsd)
 
+pub mod actor;
+mod bqueue;
 pub mod fs;
 pub mod getopts;
 pub mod rand;

@@ -63,10 +63,8 @@ fn main() {
             Some(msg) => {
                 match msg {
                     Add(num) => {
-                        println!("Add({})", num);
                         if num == 5 {
                             let pid3;
-                            println!("Spawning");
                             loop {
                                 match pq.spawn(SpawnParameters {
                                     handler: actor_handler3.clone(),
@@ -81,14 +79,12 @@ fn main() {
                                     None => (),
                                 }
                             }
-                            println!("Spawned");
                             expect!(ProcessQueue::send_message(&pid3, Pid1(current.clone())));
                         }
                         state1 += num;
                         ProcessContinuation::WaitMessage
                     },
                     AddToState => {
-                        println!("AddToState");
                         state.fetch_add(state1 as usize, Ordering::SeqCst);
                         ProcessContinuation::Stop
                     },
@@ -129,7 +125,6 @@ fn main() {
     let actor_handler2 = move |current: &Pid<_>, msg: Option<Msg2>| {
         match msg {
             Some(msg) => {
-                println!("{:?}", msg);
                 match msg {
                     Sub(num) => {
                         state2 -= num;

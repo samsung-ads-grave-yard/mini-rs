@@ -58,7 +58,7 @@ fn main() {
                     Add(num) => {
                         if num == 5 {
                             let pid3 = pq.blocking_spawn(SpawnParameters {
-                                handler: actor_handler3.clone(),
+                                handler: actor_handler3,
                                 message_capacity: 1,
                                 max_message_per_cycle: 1,
                             });
@@ -88,7 +88,7 @@ fn main() {
     };
 
     let pid1 = process_queue.blocking_spawn(SpawnParameters {
-        handler: actor_handler1.clone(),
+        handler: actor_handler1,
         message_capacity: 5,
         max_message_per_cycle: 1,
     });
@@ -119,7 +119,7 @@ fn main() {
     };
 
     process_queue.blocking_spawn(SpawnParameters {
-        handler: actor_handler2.clone(),
+        handler: actor_handler2,
         message_capacity: 2,
         max_message_per_cycle: 1,
     });

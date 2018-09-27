@@ -2,7 +2,6 @@ extern crate mini;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
 use mini::actor::{
     Pid,
@@ -147,9 +146,7 @@ fn main() {
     {
     }
 
-    while sum.load(Ordering::SeqCst) != 21 {
-        thread::yield_now();
-    }
+    process_queue.join();
 
     println!("Sum: {}", sum.load(Ordering::SeqCst));
 }

@@ -214,6 +214,12 @@ impl ProcessQueue {
         }
     }
 
+    pub fn join(&self) {
+        while self.shared_pq.process_count.load(Ordering::SeqCst) > 0 {
+            thread::yield_now();
+        }
+    }
+
     pub fn send_message<MSG>(pid: &Pid<MSG>, msg: MSG) -> Result<(), Error<MSG>> {
         let dest_processes = &pid.dest_processes;
         let dest_process = unsafe { dest_processes[pid.id].get_as::<Arc<SharedProcess>>() };

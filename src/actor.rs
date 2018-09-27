@@ -202,6 +202,27 @@ impl ProcessQueue {
         })
     }
 
+    pub fn blocking_spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Pid<MSG>
+    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
+          MSG: Send + 'static
+    {
+        let pid;
+        let mut params = params;
+        loop {
+            match self.spawn_result(params) {
+                Ok(process_id) => {
+                    pid = process_id;
+                    break;
+                },
+                Err(result_params) => {
+                    params = result_params;
+                    thread::yield_now()
+                },
+            }
+        }
+        pid
+    }
+
     fn get_pid<MSG>(&self, id: usize) -> Pid<MSG> {
         let dest_processes = self.shared_processes.clone();
         let generation = unsafe { &self.processes.get(id).get_as::<Process>().shared_process.generation };
@@ -272,6 +293,13 @@ impl ProcessQueue {
     }
 
     pub fn spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Option<Pid<MSG>>
+    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
+          MSG: Send + 'static
+    {
+        self.spawn_result(params).ok()
+    }
+
+    fn spawn_result<F, MSG>(&self, params: SpawnParameters<F>) -> Result<Pid<MSG>, SpawnParameters<F>>
     where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
           MSG: Send + 'static
     {
@@ -370,7 +398,7 @@ impl ProcessQueue {
                 thread::yield_now();
             }
 
-            Some(Pid {
+            Ok(Pid {
                 dest_processes: Arc::clone(&self.shared_processes),
                 id: process.id,
                 generation: AtomicUsize::new(process.shared_process.generation.load(Ordering::SeqCst)),
@@ -379,7 +407,7 @@ impl ProcessQueue {
         }
         else {
             self.shared_pq.process_count.fetch_sub(1, Ordering::SeqCst);
-            None
+            Err(params)
         }
     }
 }

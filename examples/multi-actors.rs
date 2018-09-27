@@ -57,21 +57,11 @@ fn main() {
                 match msg {
                     Add(num) => {
                         if num == 5 {
-                            let pid3;
-                            loop {
-                                match pq.spawn(SpawnParameters {
-                                    handler: actor_handler3.clone(),
-                                    message_capacity: 1,
-                                    max_message_per_cycle: 1,
-                                })
-                                {
-                                    Some(pid) => {
-                                        pid3 = pid;
-                                        break;
-                                    },
-                                    None => (),
-                                }
-                            }
+                            let pid3 = pq.blocking_spawn(SpawnParameters {
+                                handler: actor_handler3.clone(),
+                                message_capacity: 1,
+                                max_message_per_cycle: 1,
+                            });
                             ProcessQueue::send_message(&pid3, Pid1(current.clone())).expect("send message");
                         }
                         state1 += num;
@@ -97,21 +87,11 @@ fn main() {
         }
     };
 
-    let pid1;
-    loop {
-        match process_queue.spawn(SpawnParameters {
-                handler: actor_handler1.clone(),
-                message_capacity: 5,
-                max_message_per_cycle: 1,
-            })
-        {
-            Some(pid) => {
-                pid1 = pid;
-                break;
-            },
-            None => (),
-        }
-    }
+    let pid1 = process_queue.blocking_spawn(SpawnParameters {
+        handler: actor_handler1.clone(),
+        message_capacity: 5,
+        max_message_per_cycle: 1,
+    });
 
     let state = Arc::clone(&sum);
     let mut state2 = 0;
@@ -138,13 +118,11 @@ fn main() {
         }
     };
 
-    while process_queue.spawn(SpawnParameters {
-            handler: actor_handler2.clone(),
-            message_capacity: 2,
-            max_message_per_cycle: 1,
-        }).is_none()
-    {
-    }
+    process_queue.blocking_spawn(SpawnParameters {
+        handler: actor_handler2.clone(),
+        message_capacity: 2,
+        max_message_per_cycle: 1,
+    });
 
     process_queue.join();
 

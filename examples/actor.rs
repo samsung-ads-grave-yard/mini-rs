@@ -42,13 +42,11 @@ fn main() {
     let process_queue = ProcessQueue::new(1024, 4);
 
     for _ in 0..MAX_ACTOR_COUNT {
-        while process_queue.spawn(SpawnParameters {
-                handler: actor_handler.clone(),
-                message_capacity: 2,
-                max_message_per_cycle: 1,
-            }).is_none()
-        {
-        }
+        process_queue.blocking_spawn(SpawnParameters {
+            handler: actor_handler.clone(),
+            message_capacity: 2,
+            max_message_per_cycle: 1,
+        });
     }
 
     while sum.load(Ordering::SeqCst) < MAX_ACTOR_COUNT {

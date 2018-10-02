@@ -34,7 +34,11 @@
 // * metrics (probably trivial-statsd)
 
 pub mod actor;
+pub mod async;
 mod bqueue;
+mod collections;
 pub mod fs;
 pub mod getopts;
+pub mod http;
+mod net;
 pub mod rand;

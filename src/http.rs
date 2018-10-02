@@ -19,7 +19,7 @@ pub enum Msg {
 }
 
 pub struct Http {
-    process_queue: Arc<ProcessQueue>,
+    process_queue: ProcessQueue,
 }
 
 impl Http {

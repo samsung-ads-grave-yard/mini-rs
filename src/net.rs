@@ -87,7 +87,7 @@ pub mod tcp {
             message_capacity: 1,
             max_message_per_cycle: 1,
         });
-        ProcessQueue::send_message(&pid, TryingConnectionToHost(address_infos));
+        pid.send_message(TryingConnectionToHost(address_infos));
 
         /*for address_info in address_infos {
             match socket(address_info.ai_family, address_info.ai_socktype | ffi::SOCK_NONBLOCK,

@@ -2,6 +2,7 @@ use std::cell::{RefCell, UnsafeCell};
 use std::cmp;
 use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{
     AtomicBool,
@@ -52,6 +53,59 @@ pub struct Pid<MSG> {
     id: usize,
     generation: AtomicUsize,
     _marker: PhantomData<MSG>,
+}
+
+impl<MSG> Pid<MSG> {
+    pub fn send_message(&self, msg: MSG) -> Result<(), Error<MSG>> {
+        let dest_processes = &self.dest_processes;
+        let dest_process = unsafe { dest_processes[self.id].get_as::<Arc<SharedProcess>>() };
+
+        // We have to handle nasty situations here:
+        //
+        // 1. we are trying to write while the process is dying:
+        //    X = genId
+        //    actor dies
+        //    push message
+        //    actor revived
+        //    new actor consumes wrong message
+        //    send returns SUCCESS
+        //
+        // 2. we are trying to write while the process is dying:
+        //    X = genId
+        //    actor dies
+        //    push message
+        //    send returns SUCCESS, but message never processed (lesser evil)
+        //
+        // we need a release lock (until another better method is found)
+
+        if spin_try_lock(&dest_process.release_lock) {
+            if self.generation.load(Ordering::SeqCst) != dest_process.generation.load(Ordering::SeqCst) {
+                // TODO: switch to a lock guard?
+                spin_unlock(&dest_process.release_lock);
+                return Err(Error::ActorIsDead);
+            }
+
+            let message_queue = unsafe {
+                (*dest_process.message_queue
+                    .get()).as_ref()
+                    .expect("dest_process.message_queue")
+                    .get_as::<BoundedQueue<MSG>>()
+            };
+            match message_queue.push(msg) {
+                Ok(()) => {
+                    spin_unlock(&dest_process.release_lock);
+                    Ok(())
+                },
+                Err(msg) => {
+                    spin_unlock(&dest_process.release_lock);
+                    Err(Error::SendFail(msg))
+                },
+            }
+        }
+        else {
+            Err(Error::SendFail(msg))
+        }
+    }
 }
 
 impl<MSG> Debug for Pid<MSG> {
@@ -121,7 +175,7 @@ impl Process {
     }
 }
 
-pub struct ProcessQueue {
+pub struct _ProcessQueue {
     process_capacity: usize,
     process_pool: Arc<BoundedQueue<usize>>,
     processes: UnsafeArray<OpaqueBox>,
@@ -130,8 +184,13 @@ pub struct ProcessQueue {
     threads: Vec<JoinHandle<()>>,
 }
 
+#[derive(Clone)]
+pub struct ProcessQueue {
+    queue: Arc<_ProcessQueue>,
+}
+
 impl ProcessQueue {
-    pub fn new(process_capacity: usize, thread_count: usize) -> Arc<Self> {
+    pub fn new(process_capacity: usize, thread_count: usize) -> Self {
         let mut processes = Vec::with_capacity(process_capacity);
         let mut shared_processes = Vec::with_capacity(process_capacity);
         let process_pool = Arc::new(BoundedQueue::new(process_capacity));
@@ -195,16 +254,28 @@ impl ProcessQueue {
             }));
         }
 
-        Arc::new(Self {
-            process_capacity,
-            process_pool,
-            processes,
-            shared_processes: Arc::new(shared_processes.into_boxed_slice()),
-            shared_pq: Arc::clone(&shared_pq),
-            threads,
-        })
+        Self {
+            queue: Arc::new(_ProcessQueue {
+                process_capacity,
+                process_pool,
+                processes,
+                shared_processes: Arc::new(shared_processes.into_boxed_slice()),
+                shared_pq: Arc::clone(&shared_pq),
+                threads,
+            }),
+        }
     }
+}
 
+impl Deref for ProcessQueue {
+    type Target = Arc<_ProcessQueue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.queue
+    }
+}
+
+impl _ProcessQueue {
     pub fn blocking_spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Pid<MSG>
     where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + 'static,
           MSG: Send + 'static
@@ -241,57 +312,6 @@ impl ProcessQueue {
     pub fn join(&self) {
         while self.shared_pq.process_count.load(Ordering::SeqCst) > 0 {
             thread::yield_now();
-        }
-    }
-
-    pub fn send_message<MSG>(pid: &Pid<MSG>, msg: MSG) -> Result<(), Error<MSG>> {
-        let dest_processes = &pid.dest_processes;
-        let dest_process = unsafe { dest_processes[pid.id].get_as::<Arc<SharedProcess>>() };
-
-        // We have to handle nasty situations here:
-        //
-        // 1. we are trying to write while the process is dying:
-        //    X = genId
-        //    actor dies
-        //    push message
-        //    actor revived
-        //    new actor consumes wrong message
-        //    send returns SUCCESS
-        //
-        // 2. we are trying to write while the process is dying:
-        //    X = genId
-        //    actor dies
-        //    push message
-        //    send returns SUCCESS, but message never processed (lesser evil)
-        //
-        // we need a release lock (until another better method is found)
-
-        if spin_try_lock(&dest_process.release_lock) {
-            if pid.generation.load(Ordering::SeqCst) != dest_process.generation.load(Ordering::SeqCst) {
-                // TODO: switch to a lock guard?
-                spin_unlock(&dest_process.release_lock);
-                return Err(Error::ActorIsDead);
-            }
-
-            let message_queue = unsafe {
-                (*dest_process.message_queue
-                    .get()).as_ref()
-                    .expect("dest_process.message_queue")
-                    .get_as::<BoundedQueue<MSG>>()
-            };
-            match message_queue.push(msg) {
-                Ok(()) => {
-                    spin_unlock(&dest_process.release_lock);
-                    Ok(())
-                },
-                Err(msg) => {
-                    spin_unlock(&dest_process.release_lock);
-                    Err(Error::SendFail(msg))
-                },
-            }
-        }
-        else {
-            Err(Error::SendFail(msg))
         }
     }
 
@@ -415,7 +435,7 @@ impl ProcessQueue {
     }
 }
 
-impl Drop for ProcessQueue {
+impl Drop for _ProcessQueue {
     fn drop(&mut self) {
         if self.shared_pq.state.load(Ordering::Acquire) == ProcessQueueState::Running as usize {
             self.shared_pq.state.store(ProcessQueueState::Stopped as usize, Ordering::Release);

@@ -27,7 +27,7 @@ fn main() {
                 ProcessContinuation::Stop
             },
             None => {
-                if ProcessQueue::send_message(current, Msg::Add).is_ok() {
+                if current.send_message(Msg::Add).is_ok() {
                     ProcessContinuation::WaitMessage
                 }
                 else {

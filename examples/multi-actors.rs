@@ -38,8 +38,8 @@ fn main() {
     let actor_handler3 = |_current: &Pid<_>, msg: Option<Msg3>| {
         match msg {
             Some(Pid1(pid)) => {
-                ProcessQueue::send_message(&pid, Add(1)).expect("send message");
-                ProcessQueue::send_message(&pid, AddToState).expect("send message");
+                pid.send_message(Add(1)).expect("send message");
+                pid.send_message(AddToState).expect("send message");
                 ProcessContinuation::Stop
             },
             _ => ProcessContinuation::WaitMessage,
@@ -62,7 +62,7 @@ fn main() {
                                 message_capacity: 1,
                                 max_message_per_cycle: 1,
                             });
-                            ProcessQueue::send_message(&pid3, Pid1(current.clone())).expect("send message");
+                            pid3.send_message(Pid1(current.clone())).expect("send message");
                         }
                         state1 += num;
                         ProcessContinuation::WaitMessage
@@ -79,8 +79,8 @@ fn main() {
             },
             None => {
                 if let Some(ref pid) = pid2 {
-                    ProcessQueue::send_message(pid, Sub(35)).expect("send message");
-                    ProcessQueue::send_message(pid, SubFromState).expect("send message");
+                    pid.send_message(Sub(35)).expect("send message");
+                    pid.send_message(SubFromState).expect("send message");
                 }
                 ProcessContinuation::WaitMessage
             },
@@ -101,7 +101,7 @@ fn main() {
                 match msg {
                     Sub(num) => {
                         state2 -= num;
-                        ProcessQueue::send_message(&pid1, Add(5)).expect("send message");
+                        pid1.send_message(Add(5)).expect("send message");
                         ProcessContinuation::WaitMessage
                     },
                     SubFromState => {
@@ -111,8 +111,8 @@ fn main() {
                 }
             },
             None => {
-                ProcessQueue::send_message(&pid1, Pid2(current.clone())).expect("send message");
-                ProcessQueue::send_message(&pid1, Add(50)).expect("send message");
+                pid1.send_message(Pid2(current.clone())).expect("send message");
+                pid1.send_message(Add(50)).expect("send message");
                 ProcessContinuation::WaitMessage
             },
         }

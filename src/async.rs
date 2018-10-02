@@ -4,6 +4,7 @@ use std::io::{Error, ErrorKind, Read};
 use std::net;
 use std::net::TcpStream;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::ptr;
 use std::rc::Rc;
 
 use actor::{
@@ -16,6 +17,7 @@ const MAX_EVENTS: usize = 100;
 
 #[repr(u32)]
 pub enum Mode {
+    HangupError = ffi::EPOLLHUP | ffi::EPOLLERR,
     Read = ffi::EPOLLIN,
     ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT,
     Write = ffi::EPOLLOUT,
@@ -29,6 +31,7 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new() -> io::Result<Self> {
+        // TODO: probably wants to switch to edge triggered.
         let fd = unsafe { ffi::epoll_create1(0) };
         if fd == -1 {
             return Err(Error::last_os_error());
@@ -46,8 +49,7 @@ impl EventLoop {
         self.add_raw_fd(socket.as_raw_fd(), mode, callback)
     }
 
-    fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F)
-        -> io::Result<()>
+    fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
     where F: FnMut(ffi::epoll_event) + 'static,
     {
         let mut callbacks = self.callbacks.borrow_mut();
@@ -64,6 +66,13 @@ impl EventLoop {
         };
         println!("Add fd: {} with entry: {}", fd, entry);
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn remove_raw_fd(&self, fd: RawFd) -> io::Result<()> {
+        if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Delete, fd, ptr::null_mut()) } == -1 {
             return Err(Error::last_os_error());
         }
         Ok(())
@@ -179,19 +188,24 @@ impl TcpListener {
                         let mut connection = listener.connected(&tcp_listener);
                         connection.accepted(&mut stream);
                         connection.connected(&mut stream); // TODO: is this second method necessary?
-                        eloop.add_raw_fd(stream.as_raw_fd(), Mode::ReadWrite, move |event| {
-                                // TODO: check errors in event.
-                                if event.events & Mode::Read as u32 != 0 {
-                                    let mut buffer = vec![0; 4096];
-                                    // TODO: maybe read more than once?
-                                    stream.read(&mut buffer);
-                                    connection.received(&mut stream, buffer);
-                                    //println!("Read: {}", String::from_utf8_lossy(&buffer));
-                                }
-                                if event.events & Mode::Write as u32 != 0 {
-                                    //println!("Write");
-                                }
+                        let stream_fd = stream.as_raw_fd();
+                        let event_loop = eloop.clone();
+                        eloop.add_raw_fd(stream_fd, Mode::ReadWrite, move |event| {
+                            if (event.events & Mode::HangupError as u32) != 0 {
+                                event_loop.remove_raw_fd(stream_fd);
+                                return;
                             }
+                            if event.events & Mode::Read as u32 != 0 {
+                                let mut buffer = vec![0; 4096];
+                                // TODO: maybe read more than once?
+                                stream.read(&mut buffer);
+                                connection.received(&mut stream, buffer);
+                                //println!("Read: {}", String::from_utf8_lossy(&buffer));
+                            }
+                            if event.events & Mode::Write as u32 != 0 {
+                                //println!("Write");
+                            }
+                        }
                         );
                     },
                     Err(ref error) if error.kind() == ErrorKind::WouldBlock => {

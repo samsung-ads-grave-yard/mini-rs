@@ -15,15 +15,12 @@ impl<T> Slab<T> {
     }
 
     pub fn entry(&mut self) -> Entry {
-        // TODO: check if correct entry is returned.
         for (index, element) in self.data.iter().enumerate() {
             if element.is_none() {
-                println!("Return {}", index);
                 return index;
             }
         }
         let index = self.data.len();
-        println!("Return len: {}", index);
         self.data.push(None);
         index
     }

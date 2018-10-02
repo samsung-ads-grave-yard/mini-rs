@@ -31,7 +31,7 @@ impl TcpListenNotify for Listener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify + Send> {
         Box::new(Server {})
     }
 }
@@ -47,7 +47,7 @@ impl TcpConnectionNotify for Server {
     fn received(&mut self, connection: &mut TcpStream, data: Vec<u8>) {
         println!("Data received, looping it back.");
         connection.write(b"server says: "); // TODO: make these writes async.
-        connection.write(&data);
+        connection.write(&data); // TODO: handle errors.
     }
 
     fn closed(&mut self, _connection: &mut TcpStream) {
@@ -57,13 +57,13 @@ impl TcpConnectionNotify for Server {
 
 fn main() {
     let process_queue = ProcessQueue::new(20, 4);
-    let mut event_loop = EventLoop::new().expect("event loop");
+    let event_loop = EventLoop::new_actor(&process_queue).expect("event loop");
 
     process_queue.blocking_spawn(SpawnParameters {
-        handler: ActorTcpListener::ip4(&mut event_loop, Listener {}).expect("ip4 listener"),
+        handler: ActorTcpListener::ip4(&event_loop, Listener {}).expect("ip4 listener"),
         message_capacity: 20,
         max_message_per_cycle: 10,
     });
 
-    event_loop.run();
+    process_queue.join();
 }

@@ -1,18 +1,16 @@
+use std::cell::RefCell;
 use std::io;
 use std::io::{Error, ErrorKind, Read};
 use std::net;
 use std::net::TcpStream;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::thread;
+use std::rc::Rc;
 
 use actor::{
     Pid,
     ProcessContinuation,
-    ProcessQueue,
-    SpawnParameters,
 };
 use collections::Slab;
-use self::EventMsg::*;
 
 const MAX_EVENTS: usize = 100;
 
@@ -23,62 +21,40 @@ pub enum Mode {
     Write = ffi::EPOLLOUT,
 }
 
-pub enum EventMsg {
-    AddFd(RawFd, Mode, Box<FnMut(ffi::epoll_event) + Send>),
-}
-
+#[derive(Clone)]
 pub struct EventLoop {
-    callbacks: Slab<Box<Box<FnMut(ffi::epoll_event) + Send>>>,
+    callbacks: Rc<RefCell<Slab<Box<Box<FnMut(ffi::epoll_event)>>>>>,
     fd: RawFd,
 }
 
 impl EventLoop {
-    fn new() -> io::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         let fd = unsafe { ffi::epoll_create1(0) };
         if fd == -1 {
             return Err(Error::last_os_error());
         }
         Ok(Self {
-            callbacks: Slab::new(),
+            callbacks: Rc::new(RefCell::new(Slab::new())),
             fd,
         })
     }
 
-    pub fn new_actor(process_queue: &ProcessQueue) -> Option<Pid<EventMsg>> {
-        let mut event_loop = EventLoop::new().ok()?; // TODO: better error handling.
-        let epoll_fd = event_loop.fd;
-        thread::spawn(move || {
-            EventLoop::run(epoll_fd); // TODO: handle error.
-        });
-        process_queue.spawn(SpawnParameters {
-            message_capacity: 100,
-            max_message_per_cycle: 10,
-            handler: move |_current: &Pid<_>, msg| {
-                match msg {
-                    Some(AddFd(fd, mode, callback)) => {
-                        let _ = event_loop.add_raw_fd(fd, mode, callback); // TODO: handle error.
-                    },
-                    _ => (),
-                }
-                ProcessContinuation::WaitMessage
-            },
-        })
-    }
-
-    /*fn add_fd<F, S>(&mut self, socket: &S, mode: Mode, callback: F) -> io::Result<()>
+    fn add_fd<F, S>(&self, socket: &S, mode: Mode, callback: F) -> io::Result<()>
     where F: FnMut(ffi::epoll_event) + 'static,
           S: AsRawFd,
     {
         self.add_raw_fd(socket.as_raw_fd(), mode, callback)
-    }*/
+    }
 
-    fn add_raw_fd(&mut self, fd: RawFd, mode: Mode, callback: Box<FnMut(ffi::epoll_event) + Send + 'static>)
+    fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F)
         -> io::Result<()>
+    where F: FnMut(ffi::epoll_event) + 'static,
     {
-        let entry = self.callbacks.entry();
-        let callback = Box::new(callback);
+        let mut callbacks = self.callbacks.borrow_mut();
+        let entry = callbacks.entry();
+        let callback: Box<Box<FnMut(ffi::epoll_event) + 'static>> = Box::new(Box::new(callback));
         let callback_pointer = &*callback as *const _;
-        self.callbacks.insert(entry, callback);
+        callbacks.insert(entry, callback);
         // TODO: remove the message when the fd is removed.
         let mut event = ffi::epoll_event {
             events: mode as u32,
@@ -93,7 +69,12 @@ impl EventLoop {
         Ok(())
     }
 
-    fn run(epoll_fd: RawFd) -> io::Result<()> {
+    pub fn run(&self) -> io::Result<()> {
+        // NOTE: Do not use self.callbacks, only use self.fd.
+        // This is because a callback could call add_fd() which would cause a BorrowMut error.
+        // We instead get the callback from the epoll data.
+        let epoll_fd = self.fd;
+
         let mut event_list = [
             ffi::epoll_event {
                 events: 0,
@@ -172,7 +153,7 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
-    pub fn ip4<L>(event_system: &Pid<EventMsg>, mut listener: L)
+    pub fn ip4<L>(event_loop: &EventLoop, mut listener: L)
         -> io::Result<impl FnMut(&Pid<Msg>, Option<Msg>) -> ProcessContinuation>
     where L: TcpListenNotify + Send + 'static,
     {
@@ -188,8 +169,8 @@ impl TcpListener {
                 },
             };
         tcp_listener.set_nonblocking(true)?;
-        let event_system2 = event_system.clone();
-        ProcessQueue::send_message(&event_system, AddFd(tcp_listener.as_raw_fd(), Mode::Read, Box::new(move |event| {
+        let eloop = event_loop.clone();
+        event_loop.add_raw_fd(tcp_listener.as_raw_fd(), Mode::Read, move |event| {
             // TODO: check errors in event.
             if event.events & Mode::Read as u32 != 0 {
                 match tcp_listener.accept() {
@@ -198,8 +179,7 @@ impl TcpListener {
                         let mut connection = listener.connected(&tcp_listener);
                         connection.accepted(&mut stream);
                         connection.connected(&mut stream); // TODO: is this second method necessary?
-                        ProcessQueue::send_message(&event_system2, AddFd(stream.as_raw_fd(), Mode::ReadWrite,
-                            Box::new(move |event| {
+                        eloop.add_raw_fd(stream.as_raw_fd(), Mode::ReadWrite, move |event| {
                                 // TODO: check errors in event.
                                 if event.events & Mode::Read as u32 != 0 {
                                     let mut buffer = vec![0; 4096];
@@ -211,8 +191,8 @@ impl TcpListener {
                                 if event.events & Mode::Write as u32 != 0 {
                                     //println!("Write");
                                 }
-                            })
-                        ));
+                            }
+                        );
                     },
                     Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     },
@@ -222,7 +202,7 @@ impl TcpListener {
                     },
                 }
             }
-        })));
+        });
         // TODO: call listener.closed().
         Ok(|current: &Pid<_>, msg| {
             // TODO: have a message Dispose to stop listening.
@@ -255,8 +235,7 @@ mod ffi {
         pub u64: u64,
     }
 
-    //#[repr(C, packed)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     #[derive(Clone, Copy)]
     pub struct epoll_event {
         pub events: u32,

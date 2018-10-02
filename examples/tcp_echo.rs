@@ -57,7 +57,7 @@ impl TcpConnectionNotify for Server {
 
 fn main() {
     let process_queue = ProcessQueue::new(20, 4);
-    let event_loop = EventLoop::new_actor(&process_queue).expect("event loop");
+    let event_loop = EventLoop::new().expect("event loop");
 
     process_queue.blocking_spawn(SpawnParameters {
         handler: ActorTcpListener::ip4(&event_loop, Listener {}).expect("ip4 listener"),
@@ -65,5 +65,5 @@ fn main() {
         max_message_per_cycle: 10,
     });
 
-    process_queue.join();
+    event_loop.run();
 }

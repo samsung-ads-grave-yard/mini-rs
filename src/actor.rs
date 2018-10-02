@@ -88,6 +88,9 @@ struct SharedProcess {
     release_lock: AtomicBool,
 }
 
+unsafe impl Send for SharedProcess {}
+unsafe impl Sync for SharedProcess {}
+
 impl Process {
     fn new(id: usize, process_pool: Arc<BoundedQueue<usize>>) -> Self {
         Self {
@@ -203,7 +206,7 @@ impl ProcessQueue {
     }
 
     pub fn blocking_spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Pid<MSG>
-    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
+    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + 'static,
           MSG: Send + 'static
     {
         let pid;
@@ -293,14 +296,14 @@ impl ProcessQueue {
     }
 
     pub fn spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Option<Pid<MSG>>
-    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
+    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + 'static,
           MSG: Send + 'static
     {
         self.spawn_result(params).ok()
     }
 
     fn spawn_result<F, MSG>(&self, params: SpawnParameters<F>) -> Result<Pid<MSG>, SpawnParameters<F>>
-    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + Sync + 'static,
+    where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + 'static,
           MSG: Send + 'static
     {
         let process_count = self.shared_pq.process_count.fetch_add(1, Ordering::SeqCst);
@@ -474,11 +477,11 @@ impl<T> Opaque for BoundedQueue<T> { }
 /// Its use is unsafe because the user has to make sure it extract the data from the `OpaqueBox`
 /// with the right type.
 struct OpaqueBox {
-    data: Box<Opaque>,
+    data: Box<Opaque + Send>,
 }
 
 impl OpaqueBox {
-    fn new<T: Opaque + 'static>(data: T) -> Self {
+    fn new<T: Opaque + Send + 'static>(data: T) -> Self {
         Self {
             data: Box::new(data),
         }
@@ -494,7 +497,7 @@ impl OpaqueBox {
 }
 
 unsafe impl Send for OpaqueBox {}
-unsafe impl Sync for OpaqueBox {} // TODO: check if needed.
+unsafe impl Sync for OpaqueBox {}
 
 /// Unsafe array shareable between threads.
 ///
@@ -540,4 +543,4 @@ impl<T> UnsafeArray<T> {
 }
 
 unsafe impl<T> Send for UnsafeArray<T> {}
-unsafe impl<T> Sync for UnsafeArray<T> {}
+//unsafe impl<T> Sync for UnsafeArray<T> {}

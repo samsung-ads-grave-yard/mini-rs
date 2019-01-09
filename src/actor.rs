@@ -1,3 +1,8 @@
+/*
+ * Was (probably) based on tcpm commit a4a04c65f79e67d5cdd444919860ae6a73cf915a. (TODO: check to
+ * make sure).
+ */
+
 use std::cell::{RefCell, UnsafeCell};
 use std::cmp;
 use std::fmt::{self, Debug, Formatter};

@@ -29,6 +29,7 @@ pub struct BoundedQueue<T> {
 
 impl<T> BoundedQueue<T> {
     pub fn new(capacity: usize) -> Self {
+        assert!(capacity > 1, "BoundedQueue does not work with a capacity inferior to 2.");
         let mut elements = Vec::with_capacity(capacity);
         for i in 0..capacity {
             elements.push(Node::new(i));
@@ -270,6 +271,28 @@ mod tests {
 
         for (i, &element) in results.iter().enumerate() {
             assert_eq!(element, i);
+        }
+    }
+
+    #[test]
+    fn test_underflow() {
+        let queue = Arc::new(BoundedQueue::new(2));
+
+        let q = queue.clone();
+        thread::spawn(move || {
+            for _ in 0..5_000_000_000i64 {
+                while q.pop().is_none() {
+                }
+                while q.pop().is_none() {
+                }
+            }
+        });
+
+        for _ in 0..5_000_000_000i64 {
+            while queue.push(10).is_err() {
+            }
+            while queue.push(10).is_err() {
+            }
         }
     }
 }

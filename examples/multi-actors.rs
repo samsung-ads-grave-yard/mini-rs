@@ -59,7 +59,7 @@ fn main() {
                         if num == 5 {
                             let pid3 = pq.blocking_spawn(SpawnParameters {
                                 handler: actor_handler3,
-                                message_capacity: 1,
+                                message_capacity: 2,
                                 max_message_per_cycle: 1,
                             });
                             pid3.send_message(Pid1(current.clone())).expect("send message");

@@ -207,14 +207,14 @@ impl ProcessQueue {
             let process = Process::new(process_id, Arc::clone(&process_pool));
             process_pool.push(processes.len()).expect("push to process pool");
             shared_processes.push(OpaqueBox::new(Arc::clone(&process.shared_process)));
-            processes.push(OpaqueBox::new(process));
+            processes.push(UnsafeCell::new(OpaqueBox::new(process)));
         }
 
         let shared_pq = Arc::new(SharedProcessQueue {
             process_count: AtomicUsize::new(0),
             run_queue: BoundedQueue::new(process_capacity),
             state: AtomicUsize::new(ProcessQueueState::Running as usize),
-            lock: Mutex::new(false),
+            lock: Mutex::new(()),
             condition_variable: Condvar::new(),
         });
 
@@ -476,7 +476,7 @@ struct SharedProcessQueue {
     // TODO: maybe change usize by a newtype?
     run_queue: BoundedQueue<usize>,
     state: AtomicUsize,
-    lock: Mutex<bool>,
+    lock: Mutex<()>,
     condition_variable: Condvar,
 }
 
@@ -525,22 +525,22 @@ impl<T> Opaque for BoundedQueue<T> { }
 /// Its use is unsafe because the user has to make sure it extract the data from the `OpaqueBox`
 /// with the right type.
 struct OpaqueBox {
-    data: Box<Opaque + Send>,
+    data: Box<UnsafeCell<Opaque + Send>>,
 }
 
 impl OpaqueBox {
     fn new<T: Opaque + Send + 'static>(data: T) -> Self {
         Self {
-            data: Box::new(data),
+            data: Box::new(UnsafeCell::new(data)),
         }
     }
 
     unsafe fn get_as<T>(&self) -> &T {
-        &*(&*self.data as *const _ as *const T)
+        &*(self.data.get() as *const T)
     }
 
     unsafe fn get_mut_as<T>(&mut self) -> &mut T {
-        &mut *(&*self.data as *const _ as *mut T)
+        &mut *(self.data.get() as *mut T)
     }
 }
 
@@ -554,7 +554,7 @@ unsafe impl Sync for OpaqueBox {}
 /// you do not access the same element from multiple threads or that you synchronize somehow the
 /// element accesses.
 struct UnsafeArray<T> {
-    data: Arc<[T]>,
+    data: Arc<[UnsafeCell<T>]>,
 }
 
 impl<T> Clone for UnsafeArray<T> {
@@ -567,7 +567,7 @@ impl<T> Clone for UnsafeArray<T> {
 
 impl<T> UnsafeArray<T> {
     /// Create an `UnsafeArray` from a `Vec`.
-    fn from_vec(vec: Vec<T>) -> Self {
+    fn from_vec(vec: Vec<UnsafeCell<T>>) -> Self {
         Self {
             data: vec.into_boxed_slice().into(),
         }
@@ -578,7 +578,7 @@ impl<T> UnsafeArray<T> {
     /// # Unsafety
     /// It is unsafe because another thread can mutate the specified element at the same time.
     unsafe fn get(&self, index: usize) -> &T {
-        &self.data[index]
+        &*(self.data[index].get())
     }
 
     /// Get a mutable reference to an element from the array.
@@ -586,7 +586,7 @@ impl<T> UnsafeArray<T> {
     /// # Unsafety
     /// It is unsafe because another thread can access the specified element at the same time.
     unsafe fn get_mut(&mut self, index: usize) -> &mut T {
-        &mut *(&self.data[index] as *const _ as *mut _)
+        &mut *(self.data[index].get() as *mut _)
     }
 }
 

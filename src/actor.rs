@@ -311,7 +311,6 @@ impl _ProcessQueue {
                 },
                 Err(result_params) => {
                     params = result_params;
-                    thread::yield_now()
                 },
             }
         }

@@ -37,7 +37,7 @@ impl Http {
         };
         let pid = self.process_queue.blocking_spawn(SpawnParameters {
             handler,
-            message_capacity: 1,
+            message_capacity: 2,
             max_message_per_cycle: 1,
         });
 

@@ -23,6 +23,7 @@ impl<T> Node<T> {
 pub struct BoundedQueue<T> {
     first: AtomicUsize,
     last: AtomicUsize,
+    count: AtomicUsize,
     capacity: usize,
     elements: Vec<Node<T>>,
 }
@@ -39,7 +40,13 @@ impl<T> BoundedQueue<T> {
             elements,
             first: AtomicUsize::new(0),
             last: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
         }
+    }
+
+    #[inline(always)] // TODO: is it necessary?
+    pub fn is_empty(&self) -> bool {
+        self.count.load(Ordering::Acquire) == 0
     }
 
     pub fn pop(&self) -> Option<T> {
@@ -61,6 +68,7 @@ impl<T> BoundedQueue<T> {
         }
 
         let data = element.data.load(Ordering::Acquire);
+        self.count.fetch_sub(1, Ordering::SeqCst);
         element.sequence.store(first + self.capacity, Ordering::Release);
         unsafe {
             Some(*Box::from_raw(data))
@@ -88,6 +96,7 @@ impl<T> BoundedQueue<T> {
         // it to finish, IF AND ONLY IF they reach the end. Normal case: Producers are ahead
         // TODO: maybe do not use a Box here, but make T=Box<U> when needed.
         element.data.store(Box::into_raw(Box::new(data)), Ordering::Release);
+        self.count.fetch_add(1, Ordering::SeqCst);
         element.sequence.store(last + 1, Ordering::Release);
 
         Ok(())

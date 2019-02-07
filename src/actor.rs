@@ -1,6 +1,5 @@
 /*
- * Was (probably) based on tcpm commit a4a04c65f79e67d5cdd444919860ae6a73cf915a. (TODO: check to
- * make sure).
+ * Based on tcpm commit 1f9517f83f138742aa18c7fa249828f8c0100135.
  */
 
 use std::cell::{RefCell, UnsafeCell};
@@ -8,7 +7,11 @@ use std::cmp;
 use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    Condvar,
+    Mutex,
+};
 use std::sync::atomic::{
     AtomicBool,
     AtomicUsize,
@@ -83,10 +86,10 @@ impl<MSG> Pid<MSG> {
         //
         // we need a release lock (until another better method is found)
 
-        if spin_try_lock(&dest_process.release_lock) {
+        if try_lock(&dest_process.release_lock) {
             if self.generation.load(Ordering::SeqCst) != dest_process.generation.load(Ordering::SeqCst) {
                 // TODO: switch to a lock guard?
-                spin_unlock(&dest_process.release_lock);
+                unlock(&dest_process.release_lock);
                 return Err(Error::ActorIsDead);
             }
 
@@ -98,11 +101,11 @@ impl<MSG> Pid<MSG> {
             };
             match message_queue.push(msg) {
                 Ok(()) => {
-                    spin_unlock(&dest_process.release_lock);
+                    unlock(&dest_process.release_lock);
                     Ok(())
                 },
                 Err(msg) => {
-                    spin_unlock(&dest_process.release_lock);
+                    unlock(&dest_process.release_lock);
                     Err(Error::SendFail(msg))
                 },
             }
@@ -174,7 +177,7 @@ impl Process {
         unsafe {
             *self.shared_process.message_queue.get() = None;
         }
-        spin_unlock(&self.shared_process.release_lock);
+        unlock(&self.shared_process.release_lock);
         while self.process_pool.push(self.id).is_err() {
         }
     }
@@ -211,6 +214,8 @@ impl ProcessQueue {
             process_count: AtomicUsize::new(0),
             run_queue: BoundedQueue::new(process_capacity),
             state: AtomicUsize::new(ProcessQueueState::Running as usize),
+            lock: Mutex::new(false),
+            condition_variable: Condvar::new(),
         });
 
         let mut threads = Vec::with_capacity(thread_count);
@@ -245,7 +250,6 @@ impl ProcessQueue {
                             }
                             if push_actor_back {
                                 while queue.run_queue.push(process_id).is_err() {
-                                    thread::yield_now();
                                 }
                             }
                             else {
@@ -253,7 +257,19 @@ impl ProcessQueue {
                                 queue.process_count.fetch_sub(1, Ordering::SeqCst);
                             }
                         },
-                        None => thread::yield_now(),
+                        None => {
+                            if queue.run_queue.is_empty() {
+                                let mut guard = queue.lock.lock().expect("lock");
+                                while queue.run_queue.is_empty() &&
+                                    queue.state.load(Ordering::Acquire) == ProcessQueueState::Running as usize
+                                {
+                                    guard = queue.condition_variable.wait(guard).expect("wait");
+                                }
+                            }
+                            else {
+                                // Just idle.
+                            }
+                        },
                     }
                 }
             }));
@@ -345,14 +361,13 @@ impl _ProcessQueue {
                     process = unsafe { processes.get_mut(current_process_id).get_mut_as::<Process>() };
                     break;
                 }
-                thread::yield_now();
             }
 
             let mut processes = self.processes.clone();
             let parent = CURRENT_PROCESS_ID.with(|current_process_id| {
                 *current_process_id.borrow()
             });
-            process.shared_process.release_lock.store(false, Ordering::SeqCst); // TODO: make sure its equivalent.
+            process.shared_process.release_lock.store(false, Ordering::Release); // TODO: make sure its equivalent.
             process.parent = parent;
             process.process_pool = Arc::clone(&self.process_pool);
             let mut handler = params.handler;
@@ -423,7 +438,11 @@ impl _ProcessQueue {
             }
 
             while self.shared_pq.run_queue.push(process.id).is_err() {
-                thread::yield_now();
+            }
+
+            {
+                let _guard = self.shared_pq.lock.lock().expect("lock");
+                self.shared_pq.condition_variable.notify_all();
             }
 
             Ok(Pid {
@@ -446,6 +465,7 @@ impl Drop for _ProcessQueue {
             self.shared_pq.state.store(ProcessQueueState::Stopped as usize, Ordering::Release);
             // Wait on the threads to exit.
             for thread in self.threads.drain(..) {
+                self.shared_pq.condition_variable.notify_all();
                 thread.join().expect("thread join");
             }
         }
@@ -457,6 +477,8 @@ struct SharedProcessQueue {
     // TODO: maybe change usize by a newtype?
     run_queue: BoundedQueue<usize>,
     state: AtomicUsize,
+    lock: Mutex<bool>,
+    condition_variable: Condvar,
 }
 
 pub struct SpawnParameters<F> {
@@ -482,13 +504,15 @@ fn spin_lock(lock: &AtomicBool) {
     }
 }
 
-fn spin_unlock(lock: &AtomicBool) {
-    while lock.compare_exchange_weak(true, false, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+fn unlock(lock: &AtomicBool) {
+    assert!(lock.load(Ordering::SeqCst));
+    if lock.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        panic!("compare_exchange failed in unlock.");
     }
 }
 
-fn spin_try_lock(lock: &AtomicBool) -> bool {
-    lock.compare_exchange_weak(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+fn try_lock(lock: &AtomicBool) -> bool {
+    lock.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok()
 }
 
 /// Trait used for data that can be inserted inside an `OpaqueBox`.

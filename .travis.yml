@@ -23,17 +23,17 @@ matrix:
           script:
               - cargo build
               - cargo test
-              - cargo test -- --ignored
+              - travis_wait cargo test -- --ignored
         - rust: beta
           script:
               - cargo build
               - cargo test
-              - cargo test -- --ignored
+              - travis_wait cargo test -- --ignored
         - rust: nightly
           script:
               - cargo build
               - cargo test
-              - cargo test -- --ignored
+              - travis_wait cargo test -- --ignored
               - cargo clippy --tests -- -Dwarnings
 
 notifications:

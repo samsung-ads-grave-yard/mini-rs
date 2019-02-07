@@ -283,6 +283,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature="nightly_test")]
     #[test]
     #[ignore]
     fn test_underflow() {

@@ -17,10 +17,10 @@ const MAX_EVENTS: usize = 100;
 
 #[repr(u32)]
 pub enum Mode {
-    HangupError = ffi::EPOLLHUP | ffi::EPOLLERR,
-    Read = ffi::EPOLLIN,
-    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT,
-    Write = ffi::EPOLLOUT,
+    HangupError = ffi::EPOLLHUP | ffi::EPOLLERR | ffi::EPOLLET,
+    Read = ffi::EPOLLIN | ffi::EPOLLET,
+    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLET,
+    Write = ffi::EPOLLOUT | ffi::EPOLLET,
 }
 
 #[derive(Clone)]
@@ -196,10 +196,18 @@ impl TcpListener {
                                 return;
                             }
                             if event.events & Mode::Read as u32 != 0 {
-                                let mut buffer = vec![0; 4096];
-                                // TODO: maybe read more than once?
-                                stream.read(&mut buffer);
-                                connection.received(&mut stream, buffer);
+                                loop {
+                                    // Loop to read everything because the edge-triggered mode is
+                                    // used and it only notifies once per readiness.
+                                    // TODO: Might want to reschedule the read to avoid starvation
+                                    // of other sockets.
+                                    let mut buffer = vec![0; 4096];
+                                    match stream.read(&mut buffer) {
+                                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                                        _ => (),
+                                    }
+                                    connection.received(&mut stream, buffer);
+                                }
                                 //println!("Read: {}", String::from_utf8_lossy(&buffer));
                             }
                             if event.events & Mode::Write as u32 != 0 {
@@ -238,6 +246,7 @@ mod ffi {
     pub const EPOLLIN: u32 = 0x001;
     pub const EPOLLOUT: u32 = 0x004;
     pub const EPOLLERR: u32 = 0x008;
+    pub const EPOLLET: u32 = 1 << 31;
     pub const EPOLLHUP: u32 = 0x010;
 
     #[repr(C)]

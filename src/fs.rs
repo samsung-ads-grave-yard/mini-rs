@@ -90,7 +90,7 @@ mod tests {
             let temp_file = TempFile::new().expect("new temp file");
             path = temp_file.path.clone();
             assert!(path.is_file());
-            writeln!(temp_file.get(), "test");
+            writeln!(temp_file.get(), "test").expect("write");
         }
         assert!(!path.is_file());
         assert!(!path.exists());

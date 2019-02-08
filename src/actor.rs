@@ -591,4 +591,4 @@ impl<T> UnsafeArray<T> {
 }
 
 unsafe impl<T> Send for UnsafeArray<T> {}
-//unsafe impl<T> Sync for UnsafeArray<T> {}
+unsafe impl<T> Sync for UnsafeArray<T> {}

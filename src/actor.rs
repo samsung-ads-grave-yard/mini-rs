@@ -19,6 +19,7 @@ use std::sync::atomic::{
 };
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use bqueue::BoundedQueue;
 
@@ -331,7 +332,7 @@ impl _ProcessQueue {
 
     pub fn join(&self) {
         while self.shared_pq.process_count.load(Ordering::SeqCst) > 0 {
-            thread::yield_now();
+            thread::sleep(Duration::from_nanos(1));
         }
     }
 

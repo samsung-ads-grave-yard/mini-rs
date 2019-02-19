@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io;
 use std::io::{
     Error,
@@ -27,6 +28,12 @@ pub enum Mode {
     ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
     ShutDown = ffi::EPOLLRDHUP,
     Write = ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
+}
+
+pub enum EpollResult {
+    Error(io::Error),
+    Interrupted,
+    Ok,
 }
 
 #[derive(Clone)]
@@ -83,52 +90,99 @@ impl EventLoop {
         Ok(())
     }
 
-    pub fn run(&self) -> io::Result<()> {
+    pub fn iterate(&self, event_list: &mut [ffi::epoll_event]) -> EpollResult {
         // NOTE: Do not use self.callbacks, only use self.fd.
         // This is because a callback could call add_fd() which would cause a BorrowMut error.
         // We instead get the callback from the epoll data.
         let epoll_fd = self.fd;
 
-        let mut event_list = [
-            ffi::epoll_event {
-                events: 0,
-                data: ffi::epoll_data_t {
-                    u32: 0,
-                }
-            }; MAX_EVENTS
-        ];
+        let ready = unsafe { ffi::epoll_wait(epoll_fd, event_list.as_mut_ptr(), event_list.len() as i32, -1) };
+        if ready == -1 {
+            let last_error = Error::last_os_error();
+            if last_error.kind() == ErrorKind::Interrupted {
+                return EpollResult::Interrupted;
+            }
+            else {
+                return EpollResult::Error(last_error);
+            }
+        }
+
+        for i in 0..ready as usize {
+            let event = event_list[i];
+            // Safety: it's safe to access the callback as a mutable reference here because the other accesses
+            // to callbacks will add element to the slab, not access a random element
+            // concurrently.
+            let callback =  unsafe { &mut *(event.data.u64 as *mut Box<FnMut(ffi::epoll_event)>) };
+            callback(event);
+        }
+
+        EpollResult::Ok
+    }
+
+    pub fn run(&self) -> io::Result<()> {
+        let mut event_list = event_list();
 
         loop {
-            let ready = unsafe { ffi::epoll_wait(epoll_fd, event_list.as_mut_ptr(), MAX_EVENTS as i32, -1) };
-            if ready == -1 {
-                let last_error = Error::last_os_error();
-                if last_error.kind() == ErrorKind::Interrupted {
-                    // Restart if interrupted by signal.
-                    continue;
-                }
-                else {
-                    return Err(last_error);
-                }
-            }
-
-            for i in 0..ready as usize {
-                let event = event_list[i];
-                let callback =  unsafe { &mut *(event.data.u64 as *mut Box<FnMut(ffi::epoll_event)>) };
-                callback(event);
+            match self.iterate(&mut event_list) {
+                // Restart if interrupted by signal.
+                EpollResult::Interrupted => continue,
+                EpollResult::Error(error) => return Err(error),
+                EpollResult::Ok => (),
             }
         }
     }
 }
 
+pub fn event_list() -> [ffi::epoll_event; MAX_EVENTS] {
+    [
+        ffi::epoll_event {
+            events: 0,
+            data: ffi::epoll_data_t {
+                u32: 0,
+            }
+        }; MAX_EVENTS
+    ]
+}
+
+struct Buffer {
+    buffer: Vec<u8>,
+    index: usize,
+}
+
+impl Buffer {
+    fn new(buffer: Vec<u8>, index: usize) -> Self {
+        Self {
+            buffer,
+            index,
+        }
+    }
+
+    fn advance(&mut self, count: usize) {
+        self.index += count;
+    }
+
+    fn exhausted(&self) -> bool {
+        self.index >= self.len()
+    }
+
+    fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    fn slice(&self) -> &[u8] {
+        &self.buffer[self.index..]
+    }
+}
+
 pub struct TcpConnection {
-    event_loop: EventLoop, // TODO: does it make sense to have a copy of the EventLoop here?
+    buffers: VecDeque<Buffer>,
     stream: TcpStream,
 }
 
 impl TcpConnection {
-    pub fn new(event_loop: EventLoop, stream: TcpStream) -> Self {
+    pub fn new(stream: TcpStream) -> Self {
         Self {
-            event_loop,
+            buffers: VecDeque::new(),
             stream,
         }
     }
@@ -142,38 +196,13 @@ impl TcpConnection {
     }
 
     pub fn write(&mut self, buffer: Vec<u8>) -> io::Result<()> {
-        let stream_fd = self.as_raw_fd();
-        let event_loop = self.event_loop.clone();
-        let mut index = 0;
         let buffer_size = buffer.len();
         let mut stream = self.stream.try_clone()?;
+        let mut index = 0;
         loop {
             match stream.write(&buffer[index..]) {
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                    println!("Would block");
-                    // TODO: maybe add to a buffer and write the buffer from the other callback.
-                    self.event_loop.add_raw_fd(stream_fd, Mode::Write, move |event| {
-                        println!("Ready");
-                        if event.events & Mode::Write as u32 != 0 {
-                            println!("Ready to write");
-                            match stream.write(&buffer[index..]) {
-                                Ok(written) => {
-                                    println!("Wrote {} bytes", written);
-                                    index += written;
-                                    if index >= buffer.len() {
-                                        event_loop.remove_raw_fd(stream_fd); // TODO: handle error.
-                                    }
-                                },
-                                Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
-                                    error.kind() == ErrorKind::Interrupted => (),
-                                Err(ref error) => {
-                                    // TODO: handle errors.
-                                    panic!("IO error: {}", error);
-                                },
-                            }
-                            //println!("Write");
-                        }
-                    }).expect("add_raw_fd");
+                    self.buffers.push_back(Buffer::new(buffer, index));
                     return Ok(());
                 },
                 Err(error) => {
@@ -263,7 +292,7 @@ impl TcpListener {
                     Ok((stream, _addr)) => {
                         stream.set_nonblocking(true); // TODO: handle error.
                         let mut connection_notify = listener.connected(&tcp_listener);
-                        let mut connection = TcpConnection::new(eloop.clone(), stream);
+                        let mut connection = TcpConnection::new(stream);
                         connection_notify.accepted(&mut connection);
                         connection_notify.connected(&mut connection); // TODO: is this second method necessary?
                         let stream_fd = connection.as_raw_fd();
@@ -299,7 +328,35 @@ impl TcpListener {
                                 //println!("Read: {}", String::from_utf8_lossy(&buffer));
                             }
                             if event.events & Mode::Write as u32 != 0 {
-                                //println!("Write");
+                                println!("Ready to write");
+                                let mut remove_buffer = false;
+                                // TODO: yield sometimes to avoid starvation?
+                                loop {
+                                    if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
+                                        match connection.stream.write(first_buffer.slice()) {
+                                            Ok(written) => {
+                                                println!("Wrote {} bytes", written);
+                                                println!("{} / [{}..]", first_buffer.len(), first_buffer.index);
+                                                first_buffer.advance(written);
+                                                if first_buffer.exhausted() {
+                                                    remove_buffer = true;
+                                                }
+                                            },
+                                            Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                                            Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+                                            Err(ref error) => {
+                                                // TODO: handle errors.
+                                                panic!("IO error: {}", error);
+                                            },
+                                        }
+                                    }
+                                    else {
+                                        break;
+                                    }
+                                    if remove_buffer {
+                                        connection.buffers.pop_front();
+                                    }
+                                }
                             }
                         }).expect("add_raw_fd");
                     },

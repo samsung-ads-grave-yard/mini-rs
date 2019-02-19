@@ -52,7 +52,7 @@ impl TcpConnectionNotify for Server {
 
     fn received(&mut self, connection: &mut TcpConnection, data: Vec<u8>) {
         println!("Data of size {} received, looping it back.", data.len());
-        let _ = connection.write(b"server says: ".to_vec()); // TODO: make these writes async.
+        let _ = connection.write(b"server says: ".to_vec());
         let _ = connection.write(data); // TODO: handle errors.
     }
 
@@ -67,7 +67,7 @@ fn test_blocked_write() {
     let event_loop = EventLoop::new().expect("event loop");
 
     process_queue.blocking_spawn(SpawnParameters {
-        handler: ActorTcpListener::ip4(&event_loop, Listener {}).expect("ip4 listener"),
+        handler: ActorTcpListener::ip4(&event_loop, "127.0.0.1:1337", Listener {}).expect("ip4 listener"),
         message_capacity: 20,
         max_message_per_cycle: 10,
     });

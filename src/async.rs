@@ -268,12 +268,12 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
-    pub fn ip4<L>(event_loop: &EventLoop, mut listener: L)
+    pub fn ip4<L>(event_loop: &EventLoop, host: &str, mut listener: L)
         -> io::Result<impl FnMut(&Pid<Msg>, Option<Msg>) -> ProcessContinuation>
     where L: TcpListenNotify + Send + 'static,
     {
         let tcp_listener =
-            match net::TcpListener::bind("127.0.0.1:1337") { // TODO: allow to specify the port.
+            match net::TcpListener::bind(host) {
                 Ok(tcp_listener) => {
                     listener.listening(&tcp_listener);
                     tcp_listener

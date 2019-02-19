@@ -76,7 +76,6 @@ impl EventLoop {
                 u64: callback_pointer as u64,
             },
         };
-        println!("Add fd: {} with entry: {}", fd, entry);
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
             return Err(Error::last_os_error());
         }
@@ -205,12 +204,8 @@ impl TcpConnection {
                     self.buffers.push_back(Buffer::new(buffer, index));
                     return Ok(());
                 },
-                Err(error) => {
-                    println!("Error: {}", error);
-                    return Err(error)
-                },
+                Err(error) => return Err(error),
                 Ok(written) => {
-                    println!("Wrote {}", written);
                     index += written;
                     if index >= buffer_size {
                         return Ok(());
@@ -325,18 +320,14 @@ impl TcpListener {
                                         _ => (),
                                     }
                                 }
-                                //println!("Read: {}", String::from_utf8_lossy(&buffer));
                             }
                             if event.events & Mode::Write as u32 != 0 {
-                                println!("Ready to write");
                                 let mut remove_buffer = false;
                                 // TODO: yield sometimes to avoid starvation?
                                 loop {
                                     if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
                                         match connection.stream.write(first_buffer.slice()) {
                                             Ok(written) => {
-                                                println!("Wrote {} bytes", written);
-                                                println!("{} / [{}..]", first_buffer.len(), first_buffer.index);
                                                 first_buffer.advance(written);
                                                 if first_buffer.exhausted() {
                                                     remove_buffer = true;

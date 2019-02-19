@@ -1,6 +1,5 @@
 extern crate mini;
 
-use std::io::Write;
 use std::net::TcpListener;
 
 use mini::actor::{
@@ -42,17 +41,25 @@ struct Server {
 
 impl TcpConnectionNotify for Server {
     fn accepted(&mut self, _connection: &mut TcpConnection) {
-        println!("Connection accepted.");
     }
 
     fn received(&mut self, connection: &mut TcpConnection, data: Vec<u8>) {
-        println!("Data of size {} received, looping it back.", data.len());
-        let _ = connection.write(b"server says: ".to_vec());
-        let _ = connection.write(data); // TODO: handle errors.
+        let request = String::from_utf8(data).unwrap_or_else(|_| String::new());
+        let mut lines = request.lines();
+        let first_line = lines.next().unwrap_or("GET");
+        let mut parts = first_line.split_whitespace();
+        let _method = parts.next().unwrap_or("GET");
+        let url = parts.next().unwrap_or("/");
+        let mut url_parts = url.split('?');
+        let path = url_parts.next().unwrap_or("/");
+        let query_string = url_parts.next().unwrap_or("");
+        let content = format!("You're on page {} and you queried {}", path, query_string);
+        let len = content.len();
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{}", len, content);
+        let _ = connection.write(response.into_bytes()); // TODO: handle errors.
     }
 
     fn closed(&mut self, _connection: &mut TcpConnection) {
-        println!("Server closed.");
     }
 }
 

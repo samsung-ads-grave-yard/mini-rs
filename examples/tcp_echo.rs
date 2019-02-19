@@ -1,7 +1,7 @@
 extern crate mini;
 
 use std::io::Write;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 
 use mini::actor::{
     ProcessQueue,
@@ -9,6 +9,7 @@ use mini::actor::{
 };
 use mini::async::{
     EventLoop,
+    TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
 };
@@ -40,17 +41,18 @@ struct Server {
 }
 
 impl TcpConnectionNotify for Server {
-    fn accepted(&mut self, _connection: &mut TcpStream) {
+    fn accepted(&mut self, _connection: &mut TcpConnection) {
         println!("Connection accepted.");
     }
 
-    fn received(&mut self, connection: &mut TcpStream, data: Vec<u8>) {
-        println!("Data received, looping it back.");
-        connection.write(b"server says: "); // TODO: make these writes async.
-        connection.write(&data); // TODO: handle errors.
+    fn received(&mut self, connection: &mut TcpConnection, data: Vec<u8>) {
+        println!("Data of size {} received, looping it back.", data.len());
+        let _ = connection.write(b"server says: ".to_vec()); // TODO: make these writes async.
+        eprintln!("{:?}", String::from_utf8_lossy(&data));
+        let _ = connection.write(data); // TODO: handle errors.
     }
 
-    fn closed(&mut self, _connection: &mut TcpStream) {
+    fn closed(&mut self, _connection: &mut TcpConnection) {
         println!("Server closed.");
     }
 }
@@ -63,6 +65,33 @@ fn main() {
         handler: ActorTcpListener::ip4(&event_loop, Listener {}).expect("ip4 listener"),
         message_capacity: 20,
         max_message_per_cycle: 10,
+    });
+
+    std::thread::spawn(|| {
+        use std::io::Read;
+        use std::net::TcpStream;
+
+        let mut stream = TcpStream::connect("localhost:1337").expect("stream");
+
+        let mut buffer = vec![];
+        let text: Vec<u8> = b"hello".iter().cycle().cloned().take(1000).collect();
+        for i in 0..10_000 {
+            stream.write_all(&text);
+            if i % 1000 == 0 {
+                let mut temp_buffer = vec![0u8; 1000];
+                let read = stream.read(&mut temp_buffer).expect("read");
+                buffer.extend(temp_buffer.drain(..));
+                //println!("{}", String::from_utf8_lossy(&buffer));
+            }
+        }
+
+        while buffer.len() < 10_000_000 {
+            println!("Looping");
+            let mut temp_buffer = vec![0u8; 1000];
+            let read = stream.read(&mut temp_buffer).expect("read");
+            buffer.extend(temp_buffer.drain(..));
+            println!("Len: {}", buffer.len());
+        }
     });
 
     event_loop.run();

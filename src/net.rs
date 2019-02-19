@@ -1,8 +1,6 @@
 use std::ffi::CString;
 use std::io;
 use std::mem;
-use std::net;
-use std::net::TcpStream;
 use std::os::unix::io::RawFd;
 use std::ptr;
 
@@ -19,10 +17,8 @@ pub mod tcp {
         SpawnParameters,
     };
     use async;
-    use async::Mode;
     use self::Msg::*;
-    use super::{AddrInfoIter, close, connect, ffi, getaddrinfo, socket};
-    use super::ffi::ErrNo;
+    use super::{AddrInfoIter, ffi, getaddrinfo};
 
     #[derive(Debug)]
     enum Msg {
@@ -32,14 +28,14 @@ pub mod tcp {
     }
 
     pub fn connect_to_host<M, MSG>(host: &str, port: &str, process_queue: &Arc<ProcessQueue>,
-        event_loop: &Pid<async::Msg>, receiver: &Pid<MSG>, message: M) -> io::Result<()>
+        event_loop: &Pid<async::Msg>, receiver: &Pid<MSG>, _message: M) -> io::Result<()>
     where M: Fn(RawFd) -> MSG + Send + 'static,
           MSG: Send + 'static,
     {
-        let receiver = receiver.clone();
-        let event_loop = event_loop.clone();
-        let handler = move |current: &Pid<_>, msg: Option<Msg>| {
-            if let Some(msg) = msg {
+        let _receiver = receiver.clone();
+        let _event_loop = event_loop.clone();
+        let handler = move |_current: &Pid<_>, msg: Option<Msg>| {
+            if let Some(_msg) = msg {
                 /*match msg {
                     ConnectToHost(_) => println!("Connected to host"),
                     TryingConnectionToHost(mut address_infos) => {

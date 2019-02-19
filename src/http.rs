@@ -2,7 +2,6 @@
 // TODO: make a web crawler example.
 
 use std::os::unix::io::RawFd;
-use std::sync::Arc;
 
 use actor::{
     Pid,
@@ -10,9 +9,6 @@ use actor::{
     ProcessQueue,
     SpawnParameters,
 };
-
-use net::tcp::connect_to_host;
-use self::Msg::*;
 
 pub enum Msg {
     Connected(RawFd),
@@ -29,13 +25,13 @@ impl Http {
         }
     }
 
-    pub fn get<M, MSG>(&self, uri: &str, receiver: Pid<MSG>, message: M)
+    pub fn get<M, MSG>(&self, _uri: &str, _receiver: Pid<MSG>, _message: M)
     where M: Fn(Vec<u8>) -> MSG
     {
-        let handler = |_current: &Pid<_>, msg: Option<Msg>| {
+        let handler = |_current: &Pid<_>, _msg: Option<Msg>| {
             ProcessContinuation::WaitMessage
         };
-        let pid = self.process_queue.blocking_spawn(SpawnParameters {
+        let _pid = self.process_queue.blocking_spawn(SpawnParameters {
             handler,
             message_capacity: 2,
             max_message_per_cycle: 1,

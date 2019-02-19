@@ -1,6 +1,11 @@
 use std::cell::RefCell;
 use std::io;
-use std::io::{Error, ErrorKind, Read};
+use std::io::{
+    Error,
+    ErrorKind,
+    Read,
+    Write,
+};
 use std::net;
 use std::net::TcpStream;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -17,10 +22,11 @@ const MAX_EVENTS: usize = 100;
 
 #[repr(u32)]
 pub enum Mode {
-    HangupError = ffi::EPOLLHUP | ffi::EPOLLERR | ffi::EPOLLET,
-    Read = ffi::EPOLLIN | ffi::EPOLLET,
-    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLET,
-    Write = ffi::EPOLLOUT | ffi::EPOLLET,
+    HangupError = ffi::EPOLLHUP,
+    Read = ffi::EPOLLIN | ffi::EPOLLET | ffi::EPOLLRDHUP,
+    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
+    ShutDown = ffi::EPOLLRDHUP,
+    Write = ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
 }
 
 #[derive(Clone)]
@@ -31,7 +37,6 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new() -> io::Result<Self> {
-        // TODO: probably wants to switch to edge triggered.
         let fd = unsafe { ffi::epoll_create1(0) };
         if fd == -1 {
             return Err(Error::last_os_error());
@@ -57,7 +62,7 @@ impl EventLoop {
         let callback: Box<Box<FnMut(ffi::epoll_event) + 'static>> = Box::new(Box::new(callback));
         let callback_pointer = &*callback as *const _;
         callbacks.insert(entry, callback);
-        // TODO: remove the message when the fd is removed.
+        // TODO: remove the message (you mean the callback?) when the fd is removed.
         let mut event = ffi::epoll_event {
             events: mode as u32,
             data: ffi::epoll_data_t {
@@ -115,6 +120,78 @@ impl EventLoop {
     }
 }
 
+pub struct TcpConnection {
+    event_loop: EventLoop, // TODO: does it make sense to have a copy of the EventLoop here?
+    stream: TcpStream,
+}
+
+impl TcpConnection {
+    pub fn new(event_loop: EventLoop, stream: TcpStream) -> Self {
+        Self {
+            event_loop,
+            stream,
+        }
+    }
+
+    fn as_raw_fd(&self) -> RawFd {
+        self.stream.as_raw_fd()
+    }
+
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.stream.read(buffer)
+    }
+
+    pub fn write(&mut self, buffer: Vec<u8>) -> io::Result<()> {
+        let stream_fd = self.as_raw_fd();
+        let event_loop = self.event_loop.clone();
+        let mut index = 0;
+        let buffer_size = buffer.len();
+        let mut stream = self.stream.try_clone()?;
+        loop {
+            match stream.write(&buffer[index..]) {
+                Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
+                    println!("Would block");
+                    // TODO: maybe add to a buffer and write the buffer from the other callback.
+                    self.event_loop.add_raw_fd(stream_fd, Mode::Write, move |event| {
+                        println!("Ready");
+                        if event.events & Mode::Write as u32 != 0 {
+                            println!("Ready to write");
+                            match stream.write(&buffer[index..]) {
+                                Ok(written) => {
+                                    println!("Wrote {} bytes", written);
+                                    index += written;
+                                    if index >= buffer.len() {
+                                        event_loop.remove_raw_fd(stream_fd); // TODO: handle error.
+                                    }
+                                },
+                                Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                                    error.kind() == ErrorKind::Interrupted => (),
+                                Err(ref error) => {
+                                    // TODO: handle errors.
+                                    panic!("IO error: {}", error);
+                                },
+                            }
+                            //println!("Write");
+                        }
+                    }).expect("add_raw_fd");
+                    return Ok(());
+                },
+                Err(error) => {
+                    println!("Error: {}", error);
+                    return Err(error)
+                },
+                Ok(written) => {
+                    println!("Wrote {}", written);
+                    index += written;
+                    if index >= buffer_size {
+                        return Ok(());
+                    }
+                },
+            }
+        }
+    }
+}
+
 pub trait TcpListenNotify {
     fn listening(&mut self, _listener: &net::TcpListener) {
     }
@@ -129,29 +206,29 @@ pub trait TcpListenNotify {
 }
 
 pub trait TcpConnectionNotify {
-    fn accepted(&mut self, _connection: &mut TcpStream) {
+    fn accepted(&mut self, _connection: &mut TcpConnection) {
     }
 
-    fn connecting(&mut self, _connection: &mut TcpStream, _count: u32) {
+    fn connecting(&mut self, _connection: &mut TcpConnection, _count: u32) {
     }
 
-    fn connected(&mut self, _connection: &mut TcpStream) {
+    fn connected(&mut self, _connection: &mut TcpConnection) {
     }
 
-    fn connect_failed(&mut self, _connection: &mut TcpStream) {
+    fn connect_failed(&mut self, _connection: &mut TcpConnection) {
     }
 
-    fn auth_failed(&mut self, _connection: &mut TcpStream) {
+    fn auth_failed(&mut self, _connection: &mut TcpConnection) {
     }
 
-    fn sent(&mut self, _connection: &mut TcpStream, data: Vec<u8>) -> Vec<u8> {
+    fn sent(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) -> Vec<u8> {
         data
     }
 
-    fn received(&mut self, _connection: &mut TcpStream, _data: Vec<u8>) {
+    fn received(&mut self, _connection: &mut TcpConnection, _data: Vec<u8>) {
     }
 
-    fn closed(&mut self, _connection: &mut TcpStream) {
+    fn closed(&mut self, _connection: &mut TcpConnection) {
     }
 }
 
@@ -183,15 +260,18 @@ impl TcpListener {
             // TODO: check errors in event.
             if event.events & Mode::Read as u32 != 0 {
                 match tcp_listener.accept() {
-                    Ok((mut stream, _addr)) => {
+                    Ok((stream, _addr)) => {
                         stream.set_nonblocking(true); // TODO: handle error.
-                        let mut connection = listener.connected(&tcp_listener);
-                        connection.accepted(&mut stream);
-                        connection.connected(&mut stream); // TODO: is this second method necessary?
-                        let stream_fd = stream.as_raw_fd();
+                        let mut connection_notify = listener.connected(&tcp_listener);
+                        let mut connection = TcpConnection::new(eloop.clone(), stream);
+                        connection_notify.accepted(&mut connection);
+                        connection_notify.connected(&mut connection); // TODO: is this second method necessary?
+                        let stream_fd = connection.as_raw_fd();
                         let event_loop = eloop.clone();
                         eloop.add_raw_fd(stream_fd, Mode::ReadWrite, move |event| {
-                            if (event.events & Mode::HangupError as u32) != 0 {
+                            if (event.events & Mode::HangupError as u32) != 0 ||
+                                (event.events & Mode::ShutDown as u32) != 0
+                            {
                                 event_loop.remove_raw_fd(stream_fd);
                                 return;
                             }
@@ -202,19 +282,26 @@ impl TcpListener {
                                     // TODO: Might want to reschedule the read to avoid starvation
                                     // of other sockets.
                                     let mut buffer = vec![0; 4096];
-                                    match stream.read(&mut buffer) {
-                                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                                    match connection.read(&mut buffer) {
+                                        Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                                            error.kind() == ErrorKind::Interrupted => break,
+                                        Ok(bytes_read) => {
+                                            if bytes_read == 0 {
+                                                // The connection has been shut down.
+                                                break;
+                                            }
+                                            buffer.truncate(bytes_read);
+                                            connection_notify.received(&mut connection, buffer);
+                                        },
                                         _ => (),
                                     }
-                                    connection.received(&mut stream, buffer);
                                 }
                                 //println!("Read: {}", String::from_utf8_lossy(&buffer));
                             }
                             if event.events & Mode::Write as u32 != 0 {
                                 //println!("Write");
                             }
-                        }
-                        );
+                        }).expect("add_raw_fd");
                     },
                     Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     },
@@ -224,9 +311,9 @@ impl TcpListener {
                     },
                 }
             }
-        });
+        })?;
         // TODO: call listener.closed().
-        Ok(|current: &Pid<_>, msg| {
+        Ok(|_current: &Pid<_>, _msg| {
             // TODO: have a message Dispose to stop listening.
             ProcessContinuation::WaitMessage
         })
@@ -248,8 +335,9 @@ mod ffi {
     pub const EPOLLERR: u32 = 0x008;
     pub const EPOLLET: u32 = 1 << 31;
     pub const EPOLLHUP: u32 = 0x010;
+    pub const EPOLLRDHUP: u32 = 0x2000;
 
-    #[repr(C)]
+   #[repr(C)]
     #[derive(Clone, Copy)]
     pub union epoll_data_t {
         pub ptr: *mut c_void,

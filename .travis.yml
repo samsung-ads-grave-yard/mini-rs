@@ -17,6 +17,8 @@ env:
     - RUST_BACKTRACE=1
 
 matrix:
+    allow_failures:
+        - rust: nightly
     include:
         - rust: stable
           script:
@@ -36,7 +38,6 @@ matrix:
               - cargo clippy --tests -- -Dwarnings
           before_install:
               - rustup component add clippy-preview --toolchain=nightly
-          allow_failures: true
 
 notifications:
     email: false

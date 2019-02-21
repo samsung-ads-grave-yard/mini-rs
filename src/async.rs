@@ -271,7 +271,7 @@ pub trait TcpConnectionNotify {
         data
     }
 
-    fn expect(&mut self, _connection: &mut TcpConnection) -> usize {
+    fn wait_for_bytes(&mut self, _connection: &mut TcpConnection, _quantity: usize) -> usize {
         0
     }
 

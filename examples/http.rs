@@ -6,10 +6,12 @@ use mini::actor::{
     ProcessQueue,
     SpawnParameters,
 };
+use mini::async::EventLoop;
 use mini::http::Http;
 
 use self::Msg::*;
 
+#[derive(Debug)]
 enum Msg {
     HttpGet(Vec<u8>), // TODO: change to Request.
 }
@@ -21,7 +23,7 @@ fn main() {
         match msg {
             Some(HttpGet(body)) => {
                 println!("{}", String::from_utf8_lossy(&body));
-                ProcessContinuation::Stop
+                ProcessContinuation::WaitMessage
             },
             None => {
                 ProcessContinuation::WaitMessage
@@ -37,7 +39,9 @@ fn main() {
 
     let http = Http::new();
 
-    http.get("crates.io", pid, HttpGet);
+    let event_loop = EventLoop::new().expect("event loop");
 
-    process_queue.join();
+    http.get("www.redbook.io", &event_loop, pid, HttpGet);
+
+    event_loop.run();
 }

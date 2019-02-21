@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io;
 use std::io::{
@@ -11,13 +10,13 @@ use std::net;
 use std::net::TcpStream;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
-use std::rc::Rc;
 
 use actor::{
     Pid,
+    ProcessQueue,
     ProcessContinuation,
 };
-use collections::Slab;
+use net::tcp::connect_to_host;
 
 const MAX_EVENTS: usize = 100;
 
@@ -38,7 +37,6 @@ pub enum EpollResult {
 
 #[derive(Clone)]
 pub struct EventLoop {
-    callbacks: Rc<RefCell<Slab<Box<Box<FnMut(ffi::epoll_event)>>>>>,
     fd: RawFd,
 }
 
@@ -49,7 +47,6 @@ impl EventLoop {
             return Err(Error::last_os_error());
         }
         Ok(Self {
-            callbacks: Rc::new(RefCell::new(Slab::new())),
             fd,
         })
     }
@@ -61,15 +58,13 @@ impl EventLoop {
         self.add_raw_fd(socket.as_raw_fd(), mode, callback)
     }
 
-    fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
+    pub fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
     where F: FnMut(ffi::epoll_event) + 'static,
     {
-        let mut callbacks = self.callbacks.borrow_mut();
-        let entry = callbacks.entry();
         let callback: Box<Box<FnMut(ffi::epoll_event) + 'static>> = Box::new(Box::new(callback));
-        let callback_pointer = &*callback as *const _;
-        callbacks.insert(entry, callback);
-        // TODO: remove the message (you mean the callback?) when the fd is removed.
+        let callback_pointer = Box::into_raw(callback);
+        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
+        // the event is a hangup to allow the caller to destroy the callback.
         let mut event = ffi::epoll_event {
             events: mode as u32,
             data: ffi::epoll_data_t {
@@ -82,7 +77,26 @@ impl EventLoop {
         Ok(())
     }
 
-    fn remove_raw_fd(&self, fd: RawFd) -> io::Result<()> {
+    pub fn add_raw_fd_oneshot<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
+    where F: FnOnce(ffi::epoll_event) + 'static,
+    {
+        let callback: Box<Box<FnOnce(ffi::epoll_event) + 'static>> = Box::new(Box::new(callback));
+        let callback_pointer = Box::into_raw(callback);
+        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
+        // the event is a hangup to allow the caller to destroy the callback.
+        let mut event = ffi::epoll_event {
+            events: mode as u32 | ffi::EPOLLONESHOT,
+            data: ffi::epoll_data_t {
+                u64: callback_pointer as u64,
+            },
+        };
+        if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn remove_raw_fd(&self, fd: RawFd) -> io::Result<()> {
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Delete, fd, ptr::null_mut()) } == -1 {
             return Err(Error::last_os_error());
         }
@@ -95,6 +109,7 @@ impl EventLoop {
         // We instead get the callback from the epoll data.
         let epoll_fd = self.fd;
 
+        // TODO: check if epoll_wait() can be called from multiple threads.
         let ready = unsafe { ffi::epoll_wait(epoll_fd, event_list.as_mut_ptr(), event_list.len() as i32, -1) };
         if ready == -1 {
             let last_error = Error::last_os_error();
@@ -174,6 +189,7 @@ impl Buffer {
 }
 
 pub struct TcpConnection {
+    // TODO: should the VecDeque be bounded?
     buffers: VecDeque<Buffer>,
     stream: TcpStream,
 }
@@ -188,6 +204,12 @@ impl TcpConnection {
 
     fn as_raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
+    }
+
+    pub fn ip4<C>(process_queue: &ProcessQueue, event_loop: &EventLoop, host: &str, port: u16, connection: C)
+    where C: TcpConnectionNotify+ Send + 'static,
+    {
+        connect_to_host(host, &port.to_string(), process_queue, event_loop, connection);
     }
 
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -239,7 +261,7 @@ pub trait TcpConnectionNotify {
     fn connected(&mut self, _connection: &mut TcpConnection) {
     }
 
-    fn connect_failed(&mut self, _connection: &mut TcpConnection) {
+    fn connect_failed(&mut self) { // TODO: Pony accepts a TcpConnection here. Not sure how we could get one, though.
     }
 
     fn auth_failed(&mut self, _connection: &mut TcpConnection) {
@@ -247,6 +269,10 @@ pub trait TcpConnectionNotify {
 
     fn sent(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) -> Vec<u8> {
         data
+    }
+
+    fn expect(&mut self, _connection: &mut TcpConnection) -> usize {
+        0
     }
 
     fn received(&mut self, _connection: &mut TcpConnection, _data: Vec<u8>) {
@@ -260,6 +286,70 @@ pub enum Msg {
 }
 
 pub struct TcpListener {
+}
+
+pub fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>) {
+    connection_notify.connected(&mut connection); // TODO: is this second method necessary?
+    let fd = connection.as_raw_fd();
+    let event_loop = eloop.clone();
+    eloop.add_raw_fd(fd, Mode::ReadWrite, move |event| {
+        if (event.events & Mode::HangupError as u32) != 0 ||
+            (event.events & Mode::ShutDown as u32) != 0
+        {
+            event_loop.remove_raw_fd(fd);
+            return;
+        }
+        if event.events & Mode::Read as u32 != 0 {
+            loop {
+                // Loop to read everything because the edge-triggered mode is
+                // used and it only notifies once per readiness.
+                // TODO: Might want to reschedule the read to avoid starvation
+                // of other sockets.
+                let mut buffer = vec![0; 4096];
+                match connection.read(&mut buffer) {
+                    Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                        error.kind() == ErrorKind::Interrupted => break,
+                    Ok(bytes_read) => {
+                        if bytes_read == 0 {
+                            // The connection has been shut down.
+                            break;
+                        }
+                        buffer.truncate(bytes_read);
+                        connection_notify.received(&mut connection, buffer);
+                    },
+                    _ => (),
+                }
+            }
+        }
+        if event.events & Mode::Write as u32 != 0 {
+            let mut remove_buffer = false;
+            // TODO: yield sometimes to avoid starvation?
+            loop {
+                if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
+                    match connection.stream.write(first_buffer.slice()) {
+                        Ok(written) => {
+                            first_buffer.advance(written);
+                            if first_buffer.exhausted() {
+                                remove_buffer = true;
+                            }
+                        },
+                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                        Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+                        Err(ref error) => {
+                            // TODO: handle errors.
+                            panic!("IO error: {}", error);
+                        },
+                    }
+                }
+                else {
+                    break;
+                }
+                if remove_buffer {
+                    connection.buffers.pop_front();
+                }
+            }
+        }
+    }).expect("add_raw_fd");
 }
 
 impl TcpListener {
@@ -289,67 +379,7 @@ impl TcpListener {
                         let mut connection_notify = listener.connected(&tcp_listener);
                         let mut connection = TcpConnection::new(stream);
                         connection_notify.accepted(&mut connection);
-                        connection_notify.connected(&mut connection); // TODO: is this second method necessary?
-                        let stream_fd = connection.as_raw_fd();
-                        let event_loop = eloop.clone();
-                        eloop.add_raw_fd(stream_fd, Mode::ReadWrite, move |event| {
-                            if (event.events & Mode::HangupError as u32) != 0 ||
-                                (event.events & Mode::ShutDown as u32) != 0
-                            {
-                                event_loop.remove_raw_fd(stream_fd);
-                                return;
-                            }
-                            if event.events & Mode::Read as u32 != 0 {
-                                loop {
-                                    // Loop to read everything because the edge-triggered mode is
-                                    // used and it only notifies once per readiness.
-                                    // TODO: Might want to reschedule the read to avoid starvation
-                                    // of other sockets.
-                                    let mut buffer = vec![0; 4096];
-                                    match connection.read(&mut buffer) {
-                                        Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
-                                            error.kind() == ErrorKind::Interrupted => break,
-                                        Ok(bytes_read) => {
-                                            if bytes_read == 0 {
-                                                // The connection has been shut down.
-                                                break;
-                                            }
-                                            buffer.truncate(bytes_read);
-                                            connection_notify.received(&mut connection, buffer);
-                                        },
-                                        _ => (),
-                                    }
-                                }
-                            }
-                            if event.events & Mode::Write as u32 != 0 {
-                                let mut remove_buffer = false;
-                                // TODO: yield sometimes to avoid starvation?
-                                loop {
-                                    if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
-                                        match connection.stream.write(first_buffer.slice()) {
-                                            Ok(written) => {
-                                                first_buffer.advance(written);
-                                                if first_buffer.exhausted() {
-                                                    remove_buffer = true;
-                                                }
-                                            },
-                                            Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
-                                            Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                                            Err(ref error) => {
-                                                // TODO: handle errors.
-                                                panic!("IO error: {}", error);
-                                            },
-                                        }
-                                    }
-                                    else {
-                                        break;
-                                    }
-                                    if remove_buffer {
-                                        connection.buffers.pop_front();
-                                    }
-                                }
-                            }
-                        }).expect("add_raw_fd");
+                        manage_connection(&eloop, connection, connection_notify);
                     },
                     Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     },
@@ -381,6 +411,7 @@ mod ffi {
     pub const EPOLLIN: u32 = 0x001;
     pub const EPOLLOUT: u32 = 0x004;
     pub const EPOLLERR: u32 = 0x008;
+    pub const EPOLLONESHOT: u32 = 1 << 30;
     pub const EPOLLET: u32 = 1 << 31;
     pub const EPOLLHUP: u32 = 0x010;
     pub const EPOLLRDHUP: u32 = 0x2000;

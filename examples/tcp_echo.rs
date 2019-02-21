@@ -42,6 +42,7 @@ struct Server {
 
 impl TcpConnectionNotify for Server {
     fn accepted(&mut self, _connection: &mut TcpConnection) {
+        // TODO: send a message to the connection in a second using a timer.
         println!("Connection accepted.");
     }
 

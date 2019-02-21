@@ -7,8 +7,8 @@ use std::ptr;
 pub mod tcp {
     use std::io;
     use std::mem;
-    use std::os::unix::io::RawFd;
-    use std::sync::Arc;
+    use std::net::TcpStream;
+    use std::os::unix::io::FromRawFd;
 
     use actor::{
         Pid,
@@ -16,74 +16,108 @@ pub mod tcp {
         ProcessQueue,
         SpawnParameters,
     };
-    use async;
+    use async::{
+        EventLoop,
+        Mode,
+        TcpConnection,
+        TcpConnectionNotify,
+        manage_connection,
+    };
+    use self::ffi::ErrNo;
     use self::Msg::*;
-    use super::{AddrInfoIter, ffi, getaddrinfo};
+    use super::{
+        AddrInfoIter,
+        close,
+        connect,
+        ffi,
+        getaddrinfo,
+        getsockopt,
+        socket,
+    };
 
     #[derive(Debug)]
-    enum Msg {
-        ConnectToHost(RawFd),
-        ProgressConnectToHost(RawFd),
-        TryingConnectionToHost(AddrInfoIter),
+    enum Msg<CONNECTION>
+    where CONNECTION: TcpConnectionNotify,
+    {
+        TryingConnectionToHost(AddrInfoIter, u32, CONNECTION),
     }
 
-    pub fn connect_to_host<M, MSG>(host: &str, port: &str, process_queue: &Arc<ProcessQueue>,
-        event_loop: &Pid<async::Msg>, receiver: &Pid<MSG>, _message: M) -> io::Result<()>
-    where M: Fn(RawFd) -> MSG + Send + 'static,
-          MSG: Send + 'static,
+    pub fn connect_to_host<CONNECTION>(host: &str, port: &str, process_queue: &ProcessQueue,
+        event_loop: &EventLoop, mut connection_notify: CONNECTION) -> io::Result<()>
+    where CONNECTION: TcpConnectionNotify + Send + 'static,
     {
-        let _receiver = receiver.clone();
-        let _event_loop = event_loop.clone();
-        let handler = move |_current: &Pid<_>, msg: Option<Msg>| {
-            if let Some(_msg) = msg {
-                /*match msg {
-                    ConnectToHost(_) => println!("Connected to host"),
-                    TryingConnectionToHost(mut address_infos) => {
-                        println!("Trying connection to host");
-                        let address_info = address_infos.next().expect("address_infos");
-                        match socket(address_info.ai_family, address_info.ai_socktype | ffi::SOCK_NONBLOCK,
-                                          address_info.ai_protocol)
-                        {
-                            Ok(fd) => {
-                                println!("D");
-                                match connect(fd, address_info.ai_addr, address_info.ai_addrlen) {
-                                    Ok(_) => {
-                                        ProcessQueue::send_message(&receiver, message(fd));
-                                    },
-                                    Err(ref error) if error.raw_os_error() == Some(ErrNo::InProgress as i32) => {
-                                        /*ProcessQueue::send_message(&event_loop,
-                                            AddFd(fd, Mode::Write, ProgressConnectToHost(fd)));*/
-                                        println!("Register the event");
+        let event_loop = event_loop.clone();
+        let handler = move |current: &Pid<_>, msg: Option<Msg<CONNECTION>>| {
+            if let Some(msg) = msg {
+                match msg {
+                    TryingConnectionToHost(mut address_infos, count, mut connection_notify) => {
+                        match address_infos.next() {
+                            Some(address_info) => {
+                                match socket(address_info.ai_family, address_info.ai_socktype | ffi::SOCK_NONBLOCK,
+                                                  address_info.ai_protocol)
+                                {
+                                    Ok(fd) => {
+                                        let stream = unsafe { TcpStream::from_raw_fd(fd) };
+                                        stream.set_nonblocking(true); // TODO: handle error. FIXME: remove since it's already non-blocking?
+                                        let mut connection = TcpConnection::new(stream);
+                                        connection_notify.connecting(&mut connection, count); // FIXME: send right count.
+                                        match connect(fd, address_info.ai_addr, address_info.ai_addrlen) {
+                                            Ok(()) => manage_connection(&event_loop, connection, Box::new(connection_notify)),
+                                            Err(ref error) if error.raw_os_error() == Some(ErrNo::InProgress as i32) => {
+                                                let current = current.clone();
+                                                let eloop = event_loop.clone();
+                                                event_loop.add_raw_fd_oneshot(fd, Mode::Write, move |event| {
+                                                    if event.events & Mode::Write as u32 != 0 {
+                                                        let result = getsockopt(fd, ffi::SOL_SOCKET, ffi::SO_ERROR);
+                                                        match result {
+                                                            Ok(value) if value != 0 => {
+                                                                // TODO: should we close(fd) here?
+                                                                current.send_message(TryingConnectionToHost(address_infos, count + 1, connection_notify));
+                                                            },
+                                                            Ok(_) => {
+                                                                eloop.remove_raw_fd(fd).expect("remove raw fd");
+                                                                manage_connection(&eloop, connection, Box::new(connection_notify))
+                                                            },
+                                                            Err(err) => {
+                                                                close(fd).expect("close fd"); // TODO: handle error.
+                                                                current.send_message(TryingConnectionToHost(address_infos, count + 1, connection_notify));
+                                                            },
+                                                        }
+                                                    }
+                                                });
+                                            },
+                                            Err(error) => {
+                                                println!("Error connect: {:?}", error.raw_os_error());
+                                                close(fd).expect("close fd"); // TODO: handle error.
+                                                // TODO: try next elements in the iterator.
+                                            },
+                                        }
                                     },
                                     Err(error) => {
-                                        println!("Error connect: {:?}", error.raw_os_error());
-                                        close(fd).expect("close fd"); // TODO: handle error.
-                                        // TODO: try next elements in the iterator.
+                                        println!("Error: {}", error);
+                                        current.send_message(TryingConnectionToHost(address_infos, count + 1, connection_notify));
                                     },
                                 }
                             },
-                            Err(error) => {
-                                println!("Error: {}", error);
-                                // TODO: try next elements in the iterator.
-                            },
+                            None => connection_notify.connect_failed(),
                         }
                     },
-                }*/
+                }
             }
             ProcessContinuation::WaitMessage
         };
 
         let mut hints: ffi::addrinfo = unsafe { mem::zeroed() };
         hints.ai_socktype = ffi::SOCK_STREAM as i32;
-        // TODO: use getaddrinfo_a which is asynchronous.
+        // TODO: use getaddrinfo_a which is asynchronous. Maybe not: https://medium.com/where-the-flamingcow-roams/asynchronous-name-resolution-in-c-268ff5df3081
         let address_infos = getaddrinfo(Some(host), Some(port), Some(hints))
             .map_err(|()| io::Error::from(io::ErrorKind::NotFound))?;
         let pid = process_queue.blocking_spawn(SpawnParameters {
             handler,
-            message_capacity: 1,
+            message_capacity: 2,
             max_message_per_cycle: 1,
         });
-        pid.send_message(TryingConnectionToHost(address_infos));
+        pid.send_message(TryingConnectionToHost(address_infos, 0, connection_notify));
 
         /*for address_info in address_infos {
             match socket(address_info.ai_family, address_info.ai_socktype | ffi::SOCK_NONBLOCK,
@@ -230,8 +264,8 @@ fn to_c_string(string: Option<&str>) -> *const i8 {
 
 pub fn getsockopt(socket: RawFd, level: i32, name: i32) -> io::Result<i32> {
     let mut option_value = 0i32;
-    let option_len = mem::size_of_val(&option_value);
-    let error = unsafe { ffi::getsockopt(socket, level, name, &mut option_value as *mut i32 as *mut _, option_len as i32) };
+    let mut option_len = mem::size_of_val(&option_value) as i32;
+    let error = unsafe { ffi::getsockopt(socket, level, name, &mut option_value as *mut i32 as *mut _, &mut option_len as *mut i32) };
     if error == -1 {
         return Err(io::Error::last_os_error());
     }
@@ -281,7 +315,7 @@ pub mod ffi {
         pub fn getaddrinfo(node: *const i8, service: *const i8, hints: *const addrinfo, result: *mut *mut addrinfo)
             -> i32;
 
-        pub fn getsockopt(socket: i32, level: i32, option_name: i32, option_value: *mut c_void, option_len: socklen_t)
+        pub fn getsockopt(socket: i32, level: i32, option_name: i32, option_value: *mut c_void, option_len: *mut socklen_t)
             -> i32;
         pub fn socket(domain: i32, typ: i32, protocol: i32) -> i32;
     }

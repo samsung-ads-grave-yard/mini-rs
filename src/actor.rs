@@ -336,6 +336,8 @@ impl _ProcessQueue {
         }
     }
 
+    // TODO: having a oneshot spawn would be helpful for Rust. It would take a FnOnce instead. Not
+    // sure anymore if it would be helpful.
     pub fn spawn<F, MSG>(&self, params: SpawnParameters<F>) -> Option<Pid<MSG>>
     where F: FnMut(&Pid<MSG>, Option<MSG>) -> ProcessContinuation + Send + 'static,
           MSG: Send + 'static

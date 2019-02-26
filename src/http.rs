@@ -1,27 +1,17 @@
-// TODO: maybe take inspiration from: https://www.monkeysnatchbanana.com/2015/12/19/inside-the-pony-tcp-stack/
 // TODO: make a web crawler example.
 
 use std::fmt::Debug;
 use std::mem;
-use std::os::unix::io::RawFd;
 
 use actor::{
     Pid,
-    ProcessContinuation,
     ProcessQueue,
-    SpawnParameters,
 };
-use async::{
-    EventLoop,
+use async::EventLoop;
+use net::{
     TcpConnection,
     TcpConnectionNotify,
 };
-
-use self::Msg::*;
-
-pub enum Msg {
-    Connected(RawFd),
-}
 
 #[derive(Clone)]
 struct Connection<M, MSG> {

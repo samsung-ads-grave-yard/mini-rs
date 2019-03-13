@@ -6,13 +6,13 @@ use mini::actor::{
     ProcessQueue,
     SpawnParameters,
 };
-use mini::async::{
-    EventLoop,
+use mini::async::EventLoop;
+use mini::net::{
     TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::async::TcpListener as ActorTcpListener;
+use mini::net::TcpListener as ActorTcpListener;
 
 struct Listener {
 }

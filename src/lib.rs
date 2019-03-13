@@ -39,5 +39,5 @@ mod bqueue;
 pub mod fs;
 pub mod getopts;
 pub mod http;
-mod net;
+pub mod net;
 pub mod rand;

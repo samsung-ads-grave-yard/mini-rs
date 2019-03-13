@@ -23,8 +23,10 @@ use std::time::Duration;
 
 use bqueue::BoundedQueue;
 
+use self::ErrorKind::*;
+
 thread_local! {
-    static CURRENT_PROCESS_ID: RefCell<Option<usize>> = RefCell::new(None);
+    static CURRENT_PROCESS_ID: RefCell<Option<usize>> = RefCell::new(None); // TODO: use AtomicUsize?
 }
 
 type Array<T> = Box<[T]>;
@@ -35,9 +37,24 @@ enum Action {
 }
 
 #[derive(Debug)]
-pub enum Error<MSG> {
+pub struct Error<MSG> {
+    pub kind: ErrorKind,
+    pub msg: MSG,
+}
+
+impl<MSG> Error<MSG> {
+    fn new(kind: ErrorKind, msg: MSG) -> Self {
+        Self {
+            kind,
+            msg,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ErrorKind {
     ActorIsDead,
-    SendFail(MSG),
+    SendFail,
 }
 
 enum ProcessRunningState {
@@ -65,7 +82,7 @@ pub struct Pid<MSG> {
 }
 
 impl<MSG> Pid<MSG> {
-    pub fn send_message(&self, msg: MSG) -> Result<(), Error<MSG>> {
+    pub fn send_message(&self, msg: MSG) -> Result<(), Error<MSG>> { // TODO: should MSG be declared as Send?
         let dest_processes = &self.dest_processes;
         let dest_process = unsafe { dest_processes[self.id].get_as::<Arc<SharedProcess>>() };
 
@@ -91,7 +108,7 @@ impl<MSG> Pid<MSG> {
             if self.generation.load(Ordering::SeqCst) != dest_process.generation.load(Ordering::SeqCst) {
                 // TODO: switch to a lock guard?
                 unlock(&dest_process.release_lock);
-                return Err(Error::ActorIsDead);
+                return Err(Error::new(ActorIsDead, msg));
             }
 
             let message_queue = unsafe {
@@ -107,12 +124,12 @@ impl<MSG> Pid<MSG> {
                 },
                 Err(msg) => {
                     unlock(&dest_process.release_lock);
-                    Err(Error::SendFail(msg))
+                    Err(Error::new(SendFail, msg))
                 },
             }
         }
         else {
-            Err(Error::SendFail(msg))
+            Err(Error::new(SendFail, msg))
         }
     }
 }

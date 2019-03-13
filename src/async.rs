@@ -17,6 +17,46 @@ pub enum Mode {
     Write = ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
 }
 
+pub struct Event {
+    callback: *mut Box<FnMut(ffi::epoll_event) + 'static>,
+}
+
+impl Event {
+    fn new(callback: Box<Box<FnMut(ffi::epoll_event) + 'static>>) -> Self {
+        Self {
+            callback: Box::into_raw(callback),
+        }
+    }
+
+    pub fn set_callback<F>(&mut self, callback: F)
+    where F: FnMut(ffi::epoll_event) + 'static,
+    {
+        unsafe {
+            *self.callback = Box::new(callback);
+        }
+    }
+}
+
+pub struct EventOnce {
+    callback: *mut Box<FnOnce(ffi::epoll_event) + 'static>,
+}
+
+impl EventOnce {
+    fn new(callback: Box<Box<FnOnce(ffi::epoll_event) + 'static>>) -> Self {
+        Self {
+            callback: Box::into_raw(callback),
+        }
+    }
+
+    pub fn set_callback<F>(&mut self, callback: F)
+    where F: FnOnce(ffi::epoll_event) + 'static,
+    {
+        unsafe {
+            *self.callback = Box::new(callback);
+        }
+    }
+}
+
 pub enum EpollResult {
     Error(io::Error),
     Interrupted,
@@ -91,6 +131,40 @@ impl EventLoop {
         Ok(())
     }
 
+    pub fn try_add_raw_fd(&self, fd: RawFd, mode: Mode) -> io::Result<Event> {
+        let mut callback: Box<Box<FnMut(ffi::epoll_event) + 'static>> = Box::new(Box::new(|_| ()));
+        let callback_pointer = &mut *callback as *mut _;
+        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
+        // the event is a hangup to allow the caller to destroy the callback.
+        let mut event = ffi::epoll_event {
+            events: mode as u32,
+            data: ffi::epoll_data_t {
+                u64: callback_pointer as u64,
+            },
+        };
+        if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(Event::new(callback))
+    }
+
+    pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
+        let mut callback: Box<Box<FnOnce(ffi::epoll_event) + 'static>> = Box::new(Box::new(|_| ()));
+        let callback_pointer = &mut *callback as *mut _;
+        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
+        // the event is a hangup to allow the caller to destroy the callback.
+        let mut event = ffi::epoll_event {
+            events: mode as u32 | ffi::EPOLLONESHOT,
+            data: ffi::epoll_data_t {
+                u64: callback_pointer as u64,
+            },
+        };
+        if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(EventOnce::new(callback))
+    }
+
     pub fn iterate(&self, event_list: &mut [ffi::epoll_event]) -> EpollResult {
         let epoll_fd = self.fd;
 
@@ -142,7 +216,7 @@ pub fn event_list() -> [ffi::epoll_event; MAX_EVENTS] {
     ]
 }
 
-mod ffi {
+pub mod ffi {
     use std::os::raw::c_void;
 
     #[repr(i32)]

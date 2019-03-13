@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::io;
 use std::io::{
     ErrorKind,
@@ -13,6 +13,7 @@ use std::os::unix::io::{
     RawFd,
 };
 use std::ptr;
+use std::str;
 
 use actor::{
     Pid,
@@ -24,13 +25,22 @@ use async::{
     Mode,
 };
 
+fn get_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<bool> {
+    let val = unsafe { ffi::fcntl(socket.as_raw_fd(), ffi::F_GETFL, 0) };
+    if val < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(val & ffi::O_NONBLOCK != 0)
+}
+
 pub mod tcp {
-    use std::io;
+    use std::io::ErrorKind;
     use std::mem;
     use std::net::TcpStream;
     use std::os::unix::io::FromRawFd;
 
     use actor::{
+        self,
         Pid,
         ProcessContinuation,
         ProcessQueue,
@@ -56,16 +66,25 @@ pub mod tcp {
     };
 
     #[derive(Debug)]
-    enum Msg<CONNECTION>
-    where CONNECTION: TcpConnectionNotify,
-    {
+    enum Msg<CONNECTION> {
         TryingConnectionToHost(AddrInfoIter, u32, CONNECTION),
     }
 
     pub fn connect_to_host<CONNECTION>(host: &str, port: &str, process_queue: &ProcessQueue,
-        event_loop: &EventLoop, connection_notify: CONNECTION) -> io::Result<()>
+        event_loop: &EventLoop, mut connection_notify: CONNECTION)
     where CONNECTION: TcpConnectionNotify + Send + 'static,
     {
+        fn send<CONNECTION>(pid: &Pid<Msg<CONNECTION>>, connection_notify: CONNECTION, address_infos: AddrInfoIter,
+                            count: u32)
+        where CONNECTION: TcpConnectionNotify,
+        {
+            if let Err(actor::Error { msg: TryingConnectionToHost(_, _, mut connection_notify), .. }) =
+                pid.send_message(TryingConnectionToHost(address_infos, count, connection_notify))
+            {
+                connection_notify.error(ErrorKind::Other.into()); // TODO: use a new error type.
+            }
+        }
+
         let event_loop = event_loop.clone();
         let handler = move |current: &Pid<_>, msg: Option<Msg<CONNECTION>>| {
             if let Some(msg) = msg {
@@ -78,45 +97,58 @@ pub mod tcp {
                                 {
                                     Ok(fd) => {
                                         let stream = unsafe { TcpStream::from_raw_fd(fd) };
-                                        stream.set_nonblocking(true); // TODO: handle error. FIXME: remove since it's already non-blocking?
                                         let mut connection = TcpConnection::new(stream);
-                                        connection_notify.connecting(&mut connection, count); // FIXME: send right count.
+                                        connection_notify.connecting(&mut connection, count);
                                         match connect(fd, address_info.ai_addr, address_info.ai_addrlen) {
-                                            Ok(()) => manage_connection(&event_loop, connection, Box::new(connection_notify)),
+                                            Ok(()) => {
+                                                manage_connection(&event_loop, connection, Box::new(connection_notify));
+                                                return ProcessContinuation::Stop;
+                                            },
                                             Err(ref error) if error.raw_os_error() == Some(ErrNo::InProgress as i32) => {
                                                 let current = current.clone();
                                                 let eloop = event_loop.clone();
-                                                event_loop.add_raw_fd_oneshot(fd, Mode::Write, move |event| {
-                                                    if event.events & Mode::Write as u32 != 0 {
-                                                        let result = getsockopt(fd, ffi::SOL_SOCKET, ffi::SO_ERROR);
-                                                        match result {
-                                                            Ok(value) if value != 0 => {
-                                                                // TODO: should we close(fd) here?
-                                                                current.send_message(TryingConnectionToHost(address_infos, count + 1, connection_notify));
-                                                            },
-                                                            Ok(_) => {
-                                                                eloop.remove_raw_fd(fd).expect("remove raw fd");
-                                                                manage_connection(&eloop, connection, Box::new(connection_notify))
-                                                            },
-                                                            Err(err) => {
-                                                                close(fd).expect("close fd"); // TODO: handle error.
-                                                                current.send_message(TryingConnectionToHost(address_infos, count + 1, connection_notify));
-                                                            },
-                                                        }
-                                                    }
-                                                });
+                                                let result = event_loop.try_add_raw_fd_oneshot(fd, Mode::Write);
+                                                match result {
+                                                    Ok(mut event) =>
+                                                        event.set_callback(move |event| {
+                                                            if event.events & Mode::Write as u32 != 0 {
+                                                                let result = getsockopt(fd, ffi::SOL_SOCKET, ffi::SO_ERROR);
+                                                                match result {
+                                                                    Ok(value) if value != 0 => {
+                                                                        let _ = close(fd);
+                                                                        send(&current, connection_notify, address_infos, count + 1);
+                                                                    },
+                                                                    Ok(_) => {
+                                                                        if let Err(error) = eloop.remove_raw_fd(fd) {
+                                                                            // TODO: not sure if it makes sense to report this error to the user.
+                                                                            connection_notify.error(error);
+                                                                        }
+                                                                        manage_connection(&eloop, connection, Box::new(connection_notify))
+                                                                        // TODO: stop actor here.
+                                                                    },
+                                                                    Err(_) => {
+                                                                        let _ = close(fd);
+                                                                        send(&current, connection_notify, address_infos, count + 1);
+                                                                    },
+                                                                }
+                                                            }
+                                                        }),
+                                                    Err(error) => connection_notify.error(error),
+                                                }
                                             },
-                                            Err(error) => {
-                                                println!("Error connect: {:?}", error.raw_os_error());
-                                                close(fd).expect("close fd"); // TODO: handle error.
-                                                // TODO: try next elements in the iterator.
+                                            Err(_) => {
+                                                send(current, connection_notify, address_infos, count + 1);
+
+                                                // Note that errors are ignored when closing a file descriptor. The
+                                                // reason for this is that if an error occurs we don't actually know if
+                                                // the file descriptor was closed or not, and if we retried (for
+                                                // something like EINTR), we might close another valid file descriptor
+                                                // opened after we closed ours.
+                                                let _ = close(fd);
                                             },
                                         }
                                     },
-                                    Err(error) => {
-                                        println!("Error: {}", error);
-                                        current.send_message(TryingConnectionToHost(address_infos, count + 1, connection_notify));
-                                    },
+                                    Err(_) => send(current, connection_notify, address_infos, count + 1),
                                 }
                             },
                             None => connection_notify.connect_failed(),
@@ -130,15 +162,19 @@ pub mod tcp {
         let mut hints: ffi::addrinfo = unsafe { mem::zeroed() };
         hints.ai_socktype = ffi::SOCK_STREAM as i32;
         // TODO: use getaddrinfo_a which is asynchronous. Maybe not: https://medium.com/where-the-flamingcow-roams/asynchronous-name-resolution-in-c-268ff5df3081
-        let address_infos = getaddrinfo(Some(host), Some(port), Some(hints))
-            .map_err(|()| io::Error::from(io::ErrorKind::NotFound))?;
-        let pid = process_queue.blocking_spawn(SpawnParameters {
-            handler,
-            message_capacity: 2,
-            max_message_per_cycle: 1,
-        });
-        pid.send_message(TryingConnectionToHost(address_infos, 0, connection_notify));
-        Err(io::Error::from(io::ErrorKind::NotFound))
+        match getaddrinfo(Some(host), Some(port), Some(hints)) {
+            Ok(address_infos) => {
+                let pid = process_queue.blocking_spawn(SpawnParameters {
+                    handler,
+                    message_capacity: 2,
+                    max_message_per_cycle: 1,
+                });
+                send(&pid, connection_notify, address_infos, 0);
+            },
+            Err(error) => {
+                connection_notify.error(error);
+            },
+        }
     }
 }
 
@@ -191,12 +227,12 @@ pub fn connect(socket: RawFd, address: *const ffi::sockaddr, address_len: ffi::s
 }
 
 pub fn getaddrinfo(hostname: Option<&str>, service: Option<&str>, hints: Option<ffi::addrinfo>) ->
-    Result<AddrInfoIter, ()>
+    io::Result<AddrInfoIter>
 {
     let hints = hints.as_ref().map(|hints| hints as *const _).unwrap_or_else(|| ptr::null());
     let mut address_infos = ptr::null_mut();
-    let hostname = to_c_string(hostname);
-    let service = to_c_string(service);
+    let hostname = to_c_string(hostname)?;
+    let service = to_c_string(service)?;
     let result = unsafe { ffi::getaddrinfo(hostname, service, hints, &mut address_infos) };
     unsafe {
         // Free memory.
@@ -207,9 +243,15 @@ pub fn getaddrinfo(hostname: Option<&str>, service: Option<&str>, hints: Option<
         Ok(AddrInfoIter::new(address_infos))
     }
     else {
-        println!("Error: {}", result);
-        // FIXME: return error.
-        Err(())
+        if result == ffi::EAI_SYSTEM {
+            Err(io::Error::last_os_error())
+        }
+        else {
+            let reason = unsafe {
+                str::from_utf8(CStr::from_ptr(ffi::gai_strerror(result)).to_bytes()).unwrap_or("unknown error").to_string()
+            };
+            Err(io::Error::new(ErrorKind::Other, format!("failed to lookup address information: {}", reason)))
+        }
     }
 }
 
@@ -221,15 +263,13 @@ pub fn socket(domain: i32, typ: i32, protocol: i32) -> io::Result<RawFd> {
     Ok(result)
 }
 
-fn to_c_string(string: Option<&str>) -> *const i8 {
+fn to_c_string(string: Option<&str>) -> io::Result<*const i8> {
     match string {
         Some(string) => {
-            let string = CString::new(string).expect("nul byte found in hostname argument to getaddrinfo");
-            string.into_raw()
+            let string = CString::new(string)?;
+            Ok(string.into_raw())
         },
-        None => {
-            ptr::null()
-        },
+        None => Ok(ptr::null()),
     }
 }
 
@@ -292,7 +332,7 @@ impl TcpConnection {
     }
 
     pub fn ip4<C>(process_queue: &ProcessQueue, event_loop: &EventLoop, host: &str, port: u16, connection: C)
-    where C: TcpConnectionNotify+ Send + 'static,
+    where C: TcpConnectionNotify + Send + 'static,
     {
         tcp::connect_to_host(host, &port.to_string(), process_queue, event_loop, connection);
     }
@@ -334,6 +374,9 @@ pub trait TcpListenNotify {
     }
 
     fn connected(&mut self, listener: &net::TcpListener) -> Box<TcpConnectionNotify + Send>; // TODO: maybe remove Send.
+
+    fn error(&mut self, _error: io::Error) {
+    }
 }
 
 pub trait TcpConnectionNotify {
@@ -352,6 +395,10 @@ pub trait TcpConnectionNotify {
     fn auth_failed(&mut self, _connection: &mut TcpConnection) {
     }
 
+    // TODO: create a new Error type instead of having to use io::ErrorKind::Other.
+    fn error(&mut self, _error: io::Error) {
+    }
+
     fn sent(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) -> Vec<u8> {
         data
     }
@@ -365,6 +412,13 @@ pub trait TcpConnectionNotify {
 
     fn closed(&mut self, _connection: &mut TcpConnection) {
     }
+
+    fn throttled(&mut self, _connection: &mut TcpConnection) {
+        // TODO: call when there is TCP backpressure.
+    }
+
+    fn unthrottled(&mut self, _connection: &mut TcpConnection) {
+    }
 }
 
 pub enum Msg {
@@ -377,79 +431,84 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
     let fd = connection.as_raw_fd();
     let event_loop = eloop.clone();
-    eloop.add_raw_fd(fd, Mode::ReadWrite, move |event| {
-        if (event.events & Mode::HangupError as u32) != 0 ||
-            (event.events & Mode::ShutDown as u32) != 0
-        {
-            event_loop.remove_raw_fd(fd);
-            return;
-        }
-        if event.events & Mode::Read as u32 != 0 {
-            loop {
-                // Loop to read everything because the edge-triggered mode is
-                // used and it only notifies once per readiness.
-                // TODO: Might want to reschedule the read to avoid starvation
-                // of other sockets.
-                let mut buffer = vec![0; 4096];
-                match connection.read(&mut buffer) {
-                    Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
-                        error.kind() == ErrorKind::Interrupted => break,
-                    Ok(bytes_read) => {
-                        if bytes_read == 0 {
-                            // The connection has been shut down.
-                            break;
-                        }
-                        buffer.truncate(bytes_read);
-                        connection_notify.received(&mut connection, buffer);
-                    },
-                    _ => (),
+    let result = eloop.try_add_raw_fd(fd, Mode::ReadWrite);
+    match result {
+        Ok(mut event) =>
+            event.set_callback(move |event| {
+                if (event.events & Mode::HangupError as u32) != 0 ||
+                    (event.events & Mode::ShutDown as u32) != 0
+                {
+                    if let Err(error) = event_loop.remove_raw_fd(fd) {
+                        // TODO: not sure if it makes sense to report this error to the user.
+                        connection_notify.error(error);
+                    }
+                    return;
                 }
-            }
-        }
-        if event.events & Mode::Write as u32 != 0 {
-            let mut remove_buffer = false;
-            // TODO: yield sometimes to avoid starvation?
-            loop {
-                if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
-                    match connection.stream.write(first_buffer.slice()) {
-                        Ok(written) => {
-                            first_buffer.advance(written);
-                            if first_buffer.exhausted() {
-                                remove_buffer = true;
-                            }
-                        },
-                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
-                        Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                        Err(ref error) => {
-                            // TODO: handle errors.
-                            panic!("IO error: {}", error);
-                        },
+                if event.events & Mode::Read as u32 != 0 {
+                    loop {
+                        // Loop to read everything because the edge-triggered mode is
+                        // used and it only notifies once per readiness.
+                        // TODO: Might want to reschedule the read to avoid starvation
+                        // of other sockets.
+                        let mut buffer = vec![0; 4096];
+                        match connection.read(&mut buffer) {
+                            Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                                error.kind() == ErrorKind::Interrupted => break,
+                            Ok(bytes_read) => {
+                                if bytes_read == 0 {
+                                    // The connection has been shut down.
+                                    break;
+                                }
+                                buffer.truncate(bytes_read);
+                                connection_notify.received(&mut connection, buffer);
+                            },
+                            _ => (),
+                        }
                     }
                 }
-                else {
-                    break;
+                if event.events & Mode::Write as u32 != 0 {
+                    let mut remove_buffer = false;
+                    // TODO: yield sometimes to avoid starvation?
+                    loop {
+                        if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
+                            match connection.stream.write(first_buffer.slice()) {
+                                Ok(written) => {
+                                    first_buffer.advance(written);
+                                    if first_buffer.exhausted() {
+                                        remove_buffer = true;
+                                    }
+                                },
+                                Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                                Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+                                Err(error) => connection_notify.error(error),
+                            }
+                        }
+                        else {
+                            break;
+                        }
+                        if remove_buffer {
+                            connection.buffers.pop_front();
+                        }
+                    }
                 }
-                if remove_buffer {
-                    connection.buffers.pop_front();
-                }
-            }
-        }
-    }).expect("add_raw_fd");
+            }),
+        Err(error) => connection_notify.error(error),
+    }
 }
 
 impl TcpListener {
-    pub fn ip4<L>(event_loop: &EventLoop, host: &str, mut listener: L)
+    pub fn ip4<L>(event_loop: &EventLoop, host: &str, mut listen_notify: L)
         -> io::Result<impl FnMut(&Pid<Msg>, Option<Msg>) -> ProcessContinuation>
     where L: TcpListenNotify + Send + 'static,
     {
         let tcp_listener =
             match net::TcpListener::bind(host) {
                 Ok(tcp_listener) => {
-                    listener.listening(&tcp_listener);
+                    listen_notify.listening(&tcp_listener);
                     tcp_listener
                 },
                 Err(error) => {
-                    listener.not_listening();
+                    listen_notify.not_listening();
                     return Err(error);
                 },
             };
@@ -460,22 +519,23 @@ impl TcpListener {
             if event.events & Mode::Read as u32 != 0 {
                 match tcp_listener.accept() {
                     Ok((stream, _addr)) => {
-                        stream.set_nonblocking(true); // TODO: handle error.
-                        let mut connection_notify = listener.connected(&tcp_listener);
-                        let mut connection = TcpConnection::new(stream);
-                        connection_notify.accepted(&mut connection);
-                        manage_connection(&eloop, connection, connection_notify);
+                        match stream.set_nonblocking(true) {
+                            Ok(()) => {
+                                let mut connection_notify = listen_notify.connected(&tcp_listener);
+                                let mut connection = TcpConnection::new(stream);
+                                connection_notify.accepted(&mut connection);
+                                manage_connection(&eloop, connection, connection_notify);
+                            },
+                            Err(error) => listen_notify.error(error),
+                        }
                     },
                     Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     },
-                    Err(ref error) => {
-                        // TODO: handle errors.
-                        panic!("IO error: {}", error);
-                    },
+                    Err(error) => listen_notify.error(error),
                 }
             }
         })?;
-        // TODO: call listener.closed().
+        // TODO: call listen_notify.closed().
         Ok(|_current: &Pid<_>, _msg| {
             // TODO: have a message Dispose to stop listening.
             ProcessContinuation::WaitMessage
@@ -492,6 +552,12 @@ pub mod ffi {
     pub enum ErrNo {
         InProgress = 115,
     }
+
+    pub const EAI_SYSTEM: i32 = -11;
+
+    pub const F_GETFL: i32 = 3;
+
+    pub const O_NONBLOCK: i32 = 0o4000;
 
     pub const SOL_SOCKET: i32 = 1;
     pub const SO_ERROR: i32 = 4;
@@ -525,6 +591,9 @@ pub mod ffi {
         pub fn freeaddrinfo(res: *mut addrinfo);
         pub fn getaddrinfo(node: *const i8, service: *const i8, hints: *const addrinfo, result: *mut *mut addrinfo)
             -> i32;
+        pub fn gai_strerror(errcode: i32) -> *const i8;
+
+        pub fn fcntl(fildes: i32, cmd: i32, ...) -> i32;
 
         pub fn getsockopt(socket: i32, level: i32, option_name: i32, option_value: *mut c_void, option_len: *mut socklen_t)
             -> i32;

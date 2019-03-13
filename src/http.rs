@@ -1,6 +1,8 @@
 // TODO: make a web crawler example.
 
 use std::fmt::Debug;
+use std::io;
+use std::io::ErrorKind;
 use std::mem;
 
 use actor::{
@@ -14,65 +16,103 @@ use net::{
 };
 
 #[derive(Clone)]
-struct Connection<M, MSG> {
+struct Connection<HANDLER> {
     buffer: Vec<u8>,
     content_length: usize,
-    message: M,
-    receiver: Pid<MSG>,
+    http_handler: HANDLER,
     uri: String,
 }
 
-impl<M, MSG> Connection<M, MSG> {
-    fn new(uri: &str, receiver: Pid<MSG>, message: M) -> Self {
+impl<HANDLER> Connection<HANDLER> {
+    fn new(uri: &str, http_handler: HANDLER) -> Self {
         Self {
             buffer: vec![],
             content_length: 0,
-            message,
-            receiver,
+            http_handler,
             uri: uri.to_string(),
         }
     }
 }
 
-fn parse_headers(buffer: &[u8]) -> usize {
+fn parse_headers(buffer: &[u8]) -> Option<usize> {
     // TODO: parse other headers.
     let mut size = 0;
     for line in buffer.split(|byte| *byte == b'\n') {
         if line.starts_with(b"Content-Length:") {
             let mut parts = line.split(|byte| *byte == b':');
-            parts.next().expect("header name");
-            let mut value = String::from_utf8_lossy(parts.next().expect("header value"));
-            size = str::parse(value.trim()).expect("content length is not a number");
+            parts.next()?;
+            let mut value = String::from_utf8_lossy(parts.next()?);
+            size = str::parse(value.trim()).ok()?;
         }
     }
-    size
+    Some(size)
 }
 
-impl<M, MSG> TcpConnectionNotify for Connection<M, MSG>
-where M: Fn(Vec<u8>) -> MSG,
-      MSG: Debug,
+impl<HANDLER> TcpConnectionNotify for Connection<HANDLER>
+where HANDLER: HttpHandler,
 {
     fn connecting(&mut self, _connection: &mut TcpConnection, count: u32) {
         println!("Connecting. Attempt #{}", count);
     }
 
     fn connected(&mut self, connection: &mut TcpConnection) {
-        connection.write(format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", self.uri).into_bytes()).expect("write");
+        if let Err(error) = connection.write(format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", self.uri).into_bytes()) {
+            self.http_handler.error(error);
+        }
+    }
+
+    fn error(&mut self, error: io::Error) {
+        self.http_handler.error(error);
     }
 
     fn received(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) {
         self.buffer.extend(data);
         if self.buffer.ends_with(b"\r\n\r\n") {
-            self.content_length = parse_headers(&self.buffer);
-            let mut buffer = vec![];
-            mem::swap(&mut self.buffer, &mut buffer);
+            match parse_headers(&self.buffer) {
+                Some(content_length) => {
+                    self.content_length = content_length;
+                    let mut buffer = vec![];
+                    mem::swap(&mut self.buffer, &mut buffer);
+                },
+                None => self.http_handler.error(ErrorKind::InvalidData.into()),
+            }
         }
         else if self.buffer.len() >= self.content_length {
             self.content_length = 0;
             let mut buffer = vec![];
             mem::swap(&mut self.buffer, &mut buffer);
-            self.receiver.send_message((self.message)(buffer)).expect("send message");
+            self.http_handler.response(buffer);
         }
+    }
+}
+
+pub trait HttpHandler {
+    fn response(&mut self, data: Vec<u8>);
+
+    fn error(&mut self, _error: io::Error) {
+    }
+}
+
+pub struct DefaultHttpHandler<MSG, SuccessMsg> {
+    actor: Pid<MSG>,
+    success_msg: SuccessMsg,
+}
+
+impl<MSG, SuccessMsg> DefaultHttpHandler<MSG, SuccessMsg> {
+    pub fn new(actor: &Pid<MSG>, success_msg: SuccessMsg) -> Self {
+        Self {
+            actor: actor.clone(),
+            success_msg,
+        }
+    }
+}
+
+impl<MSG, SuccessMsg> HttpHandler for DefaultHttpHandler<MSG, SuccessMsg>
+where MSG: Debug,
+      SuccessMsg: Fn(Vec<u8>) -> MSG,
+{
+    fn response(&mut self, data: Vec<u8>) {
+        let _ = self.actor.send_message((self.success_msg)(data));
     }
 }
 
@@ -87,10 +127,9 @@ impl Http {
         }
     }
 
-    pub fn get<M, MSG>(&self, uri: &str, event_loop: &EventLoop, receiver: Pid<MSG>, message: M)
-    where M: Fn(Vec<u8>) -> MSG + Send + 'static,
-          MSG: Debug + Send + 'static,
+    pub fn get<HANDLER>(&self, uri: &str, http_handler: HANDLER, event_loop: &EventLoop)
+    where HANDLER: HttpHandler + Send + 'static,
     {
-        TcpConnection::ip4(&self.process_queue, event_loop, uri, 80, Connection::new(uri, receiver, message));
+        TcpConnection::ip4(&self.process_queue, event_loop, uri, 80, Connection::new(uri, http_handler));
     }
 }

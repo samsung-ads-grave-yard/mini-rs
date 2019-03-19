@@ -1,19 +1,18 @@
 extern crate mini;
 
-use std::io::Write;
 use std::net::TcpListener;
 
 use mini::actor::{
     ProcessQueue,
     SpawnParameters,
 };
-use mini::async::{
-    EventLoop,
+use mini::async::EventLoop;
+use mini::net::{
     TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::async::TcpListener as ActorTcpListener;
+use mini::net::TcpListener as ActorTcpListener;
 
 struct Listener {
 }
@@ -67,5 +66,5 @@ fn main() {
         max_message_per_cycle: 10,
     });
 
-    event_loop.run();
+    event_loop.run().expect("run");
 }

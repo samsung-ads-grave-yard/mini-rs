@@ -48,7 +48,7 @@ impl HttpHandler for Handler {
 fn main() {
     let process_queue = ProcessQueue::new(10, 2);
 
-    let actor_handler = move |current: &Pid<_>, msg: Option<Msg>| {
+    let actor_handler = move |_current: &Pid<_>, msg: Option<Msg>| {
         match msg {
             Some(msg) =>
                 match msg {
@@ -80,5 +80,5 @@ fn main() {
     http.get("ww.redbook.io", Handler::new(&pid), &event_loop);
     http.get("www.redbook.io", DefaultHttpHandler::new(&pid, HttpGet), &event_loop);
 
-    event_loop.run();
+    event_loop.run().expect("run");
 }

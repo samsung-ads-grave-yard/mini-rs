@@ -3,13 +3,14 @@ use std::io::{
     Error,
     ErrorKind,
 };
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use std::ptr;
 
 const MAX_EVENTS: usize = 100;
 
 #[repr(u32)]
 pub enum Mode {
+    Error = ffi::EPOLLERR,
     HangupError = ffi::EPOLLHUP,
     Read = ffi::EPOLLIN | ffi::EPOLLET | ffi::EPOLLRDHUP,
     ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
@@ -77,13 +78,6 @@ impl EventLoop {
         Ok(Self {
             fd,
         })
-    }
-
-    fn add_fd<F, S>(&self, socket: &S, mode: Mode, callback: F) -> io::Result<()>
-    where F: FnMut(ffi::epoll_event) + 'static,
-          S: AsRawFd,
-    {
-        self.add_raw_fd(socket.as_raw_fd(), mode, callback)
     }
 
     pub fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
@@ -180,8 +174,7 @@ impl EventLoop {
             }
         }
 
-        for i in 0..ready as usize {
-            let event = event_list[i];
+        for &event in event_list.iter().take(ready as usize) {
             // Safety: it's safe to access the callback as a mutable reference here because only
             // this function can access the callbacks since they are only stored in the epoll data.
             let callback =  unsafe { &mut *(event.data.u64 as *mut Box<FnMut(ffi::epoll_event)>) };

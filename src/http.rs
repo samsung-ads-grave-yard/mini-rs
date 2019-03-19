@@ -133,3 +133,9 @@ impl Http {
         TcpConnection::ip4(&self.process_queue, event_loop, uri, 80, Connection::new(uri, http_handler));
     }
 }
+
+impl Default for Http {
+    fn default() -> Self {
+        Self::new()
+    }
+}

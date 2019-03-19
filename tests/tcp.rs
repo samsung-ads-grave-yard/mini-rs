@@ -13,12 +13,14 @@ use mini::actor::{
 use mini::async::{
     EpollResult,
     EventLoop,
+    event_list,
+};
+use mini::net::{
     TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
-    event_list,
 };
-use mini::async::TcpListener as ActorTcpListener;
+use mini::net::TcpListener as ActorTcpListener;
 
 struct Listener {
 }
@@ -84,17 +86,17 @@ fn test_blocked_write() {
         let mut buffer = vec![];
         let text: Vec<u8> = b"hello".iter().cycle().cloned().take(1000).collect();
         for i in 0..10_000 {
-            stream.write_all(&text);
+            stream.write_all(&text).expect("write_all");
             if i % 1000 == 0 {
                 let mut temp_buffer = vec![0u8; 1000];
-                let read = stream.read(&mut temp_buffer).expect("read");
+                let _read = stream.read(&mut temp_buffer).expect("read");
                 buffer.extend(temp_buffer.drain(..));
             }
         }
 
         while buffer.len() < 10_000_000 {
             let mut temp_buffer = vec![0u8; 1000];
-            let read = stream.read(&mut temp_buffer).expect("read");
+            let _read = stream.read(&mut temp_buffer).expect("read");
             buffer.extend(temp_buffer.drain(..));
         }
 

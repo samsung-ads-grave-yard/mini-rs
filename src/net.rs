@@ -25,13 +25,13 @@ use async::{
     Mode,
 };
 
-fn get_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<bool> {
+/*fn get_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<bool> {
     let val = unsafe { ffi::fcntl(socket.as_raw_fd(), ffi::F_GETFL, 0) };
     if val < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(val & ffi::O_NONBLOCK != 0)
-}
+}*/
 
 pub mod tcp {
     use std::io::ErrorKind;
@@ -99,7 +99,7 @@ pub mod tcp {
                                         let stream = unsafe { TcpStream::from_raw_fd(fd) };
                                         let mut connection = TcpConnection::new(stream);
                                         connection_notify.connecting(&mut connection, count);
-                                        match connect(fd, address_info.ai_addr, address_info.ai_addrlen) {
+                                        match unsafe { connect(fd, address_info.ai_addr, address_info.ai_addrlen) } {
                                             Ok(()) => {
                                                 manage_connection(&event_loop, connection, Box::new(connection_notify));
                                                 return ProcessContinuation::Stop;
@@ -111,7 +111,11 @@ pub mod tcp {
                                                 match result {
                                                     Ok(mut event) =>
                                                         event.set_callback(move |event| {
-                                                            if event.events & Mode::Write as u32 != 0 {
+                                                            if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                                                                send(&current, connection_notify, address_infos, count + 1);
+                                                            }
+                                                            // TODO: should we check for Write when there's an error?
+                                                            else if event.events & Mode::Write as u32 != 0 {
                                                                 let result = getsockopt(fd, ffi::SOL_SOCKET, ffi::SO_ERROR);
                                                                 match result {
                                                                     Ok(value) if value != 0 => {
@@ -219,8 +223,8 @@ pub fn close(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-pub fn connect(socket: RawFd, address: *const ffi::sockaddr, address_len: ffi::socklen_t) -> io::Result<()> {
-    if unsafe { ffi::connect(socket, address, address_len) } != 0 {
+pub unsafe fn connect(socket: RawFd, address: *const ffi::sockaddr, address_len: ffi::socklen_t) -> io::Result<()> {
+    if ffi::connect(socket, address, address_len) != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -229,7 +233,7 @@ pub fn connect(socket: RawFd, address: *const ffi::sockaddr, address_len: ffi::s
 pub fn getaddrinfo(hostname: Option<&str>, service: Option<&str>, hints: Option<ffi::addrinfo>) ->
     io::Result<AddrInfoIter>
 {
-    let hints = hints.as_ref().map(|hints| hints as *const _).unwrap_or_else(|| ptr::null());
+    let hints = hints.as_ref().map(|hints| hints as *const _).unwrap_or_else(ptr::null);
     let mut address_infos = ptr::null_mut();
     let hostname = to_c_string(hostname)?;
     let service = to_c_string(service)?;
@@ -242,16 +246,14 @@ pub fn getaddrinfo(hostname: Option<&str>, service: Option<&str>, hints: Option<
     if result == 0 {
         Ok(AddrInfoIter::new(address_infos))
     }
+    else if result == ffi::EAI_SYSTEM {
+        Err(io::Error::last_os_error())
+    }
     else {
-        if result == ffi::EAI_SYSTEM {
-            Err(io::Error::last_os_error())
-        }
-        else {
-            let reason = unsafe {
-                str::from_utf8(CStr::from_ptr(ffi::gai_strerror(result)).to_bytes()).unwrap_or("unknown error").to_string()
-            };
-            Err(io::Error::new(ErrorKind::Other, format!("failed to lookup address information: {}", reason)))
-        }
+        let reason = unsafe {
+            str::from_utf8(CStr::from_ptr(ffi::gai_strerror(result)).to_bytes()).unwrap_or("unknown error").to_string()
+        };
+        Err(io::Error::new(ErrorKind::Other, format!("failed to lookup address information: {}", reason)))
     }
 }
 
@@ -435,9 +437,8 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
     match result {
         Ok(mut event) =>
             event.set_callback(move |event| {
-                if (event.events & Mode::HangupError as u32) != 0 ||
-                    (event.events & Mode::ShutDown as u32) != 0
-                {
+                if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                    // TODO: do we want to signal these errors to the trait?
                     if let Err(error) = event_loop.remove_raw_fd(fd) {
                         // TODO: not sure if it makes sense to report this error to the user.
                         connection_notify.error(error);
@@ -514,9 +515,16 @@ impl TcpListener {
             };
         tcp_listener.set_nonblocking(true)?;
         let eloop = event_loop.clone();
-        event_loop.add_raw_fd(tcp_listener.as_raw_fd(), Mode::Read, move |event| {
-            // TODO: check errors in event.
-            if event.events & Mode::Read as u32 != 0 {
+        let fd = tcp_listener.as_raw_fd();
+        event_loop.add_raw_fd(fd, Mode::Read, move |event| {
+            if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                // TODO: do we want to signal these errors to the trait?
+                if let Err(error) = eloop.remove_raw_fd(fd) {
+                    // TODO: not sure if it makes sense to report this error to the user.
+                    listen_notify.error(error);
+                }
+            }
+            else if event.events & Mode::Read as u32 != 0 {
                 match tcp_listener.accept() {
                     Ok((stream, _addr)) => {
                         match stream.set_nonblocking(true) {

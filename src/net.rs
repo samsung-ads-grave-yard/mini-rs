@@ -21,6 +21,7 @@ use actor::{
     ProcessQueue,
 };
 use async::{
+    Action,
     EventLoop,
     Mode,
 };
@@ -127,6 +128,7 @@ pub mod tcp {
                                                                             // TODO: not sure if it makes sense to report this error to the user.
                                                                             connection_notify.error(error);
                                                                         }
+                                                                        println!("Boxing");
                                                                         manage_connection(&eloop, connection, Box::new(connection_notify))
                                                                         // TODO: stop actor here.
                                                                     },
@@ -155,7 +157,10 @@ pub mod tcp {
                                     Err(_) => send(current, connection_notify, address_infos, count + 1),
                                 }
                             },
-                            None => connection_notify.connect_failed(),
+                            None => {
+                                println!("6");
+                                connection_notify.connect_failed()
+                            },
                         }
                     },
                 }
@@ -176,6 +181,7 @@ pub mod tcp {
                 send(&pid, connection_notify, address_infos, 0);
             },
             Err(error) => {
+                println!("7");
                 connection_notify.error(error);
             },
         }
@@ -321,8 +327,15 @@ pub struct TcpConnection {
     stream: TcpStream,
 }
 
+impl Drop for TcpConnection {
+    fn drop(&mut self) {
+        println!("Drop TcpConnection: {:?}", self as *mut _);
+    }
+}
+
 impl TcpConnection {
     pub fn new(stream: TcpStream) -> Self {
+        println!(">>> Created TcpConnection");
         Self {
             buffers: VecDeque::new(),
             stream,
@@ -429,21 +442,38 @@ pub enum Msg {
 pub struct TcpListener {
 }
 
+#[derive(PartialEq)]
+struct Object {
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        println!("Drop object <<<");
+    }
+}
+
 fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>) {
+    println!("*** Moved TcpConnection 2: {:?}", &mut connection as *mut _);
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
     let fd = connection.as_raw_fd();
     let event_loop = eloop.clone();
     let result = eloop.try_add_raw_fd(fd, Mode::ReadWrite);
+    let object = Object {};
     match result {
-        Ok(mut event) =>
+        Ok(mut event) => {
+            println!("set_callback");
             event.set_callback(move |event| {
+                if object == object {
+                }
+                println!("C2");
                 if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     if let Err(error) = event_loop.remove_raw_fd(fd) {
                         // TODO: not sure if it makes sense to report this error to the user.
                         connection_notify.error(error);
                     }
-                    return;
+                    println!("4");
+                    return Action::Stop;
                 }
                 if event.events & Mode::Read as u32 != 0 {
                     loop {
@@ -452,7 +482,7 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                         // TODO: Might want to reschedule the read to avoid starvation
                         // of other sockets.
                         let mut buffer = vec![0; 4096];
-                        match connection.read(&mut buffer) {
+                        /*match connection.read(&mut buffer) {
                             Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
                                 error.kind() == ErrorKind::Interrupted => break,
                             Ok(bytes_read) => {
@@ -464,13 +494,13 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                                 connection_notify.received(&mut connection, buffer);
                             },
                             _ => (),
-                        }
+                        }*/
                     }
                 }
                 if event.events & Mode::Write as u32 != 0 {
                     let mut remove_buffer = false;
                     // TODO: yield sometimes to avoid starvation?
-                    loop {
+                    /*loop {
                         if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
                             match connection.stream.write(first_buffer.slice()) {
                                 Ok(written) => {
@@ -490,9 +520,12 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                         if remove_buffer {
                             connection.buffers.pop_front();
                         }
-                    }
+                    }*/
                 }
-            }),
+                Action::Continue
+            });
+            println!("callback set");
+        },
         Err(error) => connection_notify.error(error),
     }
 }
@@ -523,6 +556,8 @@ impl TcpListener {
                     // TODO: not sure if it makes sense to report this error to the user.
                     listen_notify.error(error);
                 }
+                println!("5");
+                return Action::Stop;
             }
             else if event.events & Mode::Read as u32 != 0 {
                 match tcp_listener.accept() {
@@ -542,6 +577,7 @@ impl TcpListener {
                     Err(error) => listen_notify.error(error),
                 }
             }
+            Action::Continue
         })?;
         // TODO: call listen_notify.closed().
         Ok(|_current: &Pid<_>, _msg| {

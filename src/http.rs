@@ -34,6 +34,12 @@ impl<HANDLER> Connection<HANDLER> {
     }
 }
 
+impl<HANDLER> Drop for Connection<HANDLER> {
+    fn drop(&mut self) {
+        println!("Drop");
+    }
+}
+
 fn parse_headers(buffer: &[u8]) -> Option<usize> {
     // TODO: parse other headers.
     let mut size = 0;

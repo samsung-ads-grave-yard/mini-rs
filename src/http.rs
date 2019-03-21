@@ -34,12 +34,6 @@ impl<HANDLER> Connection<HANDLER> {
     }
 }
 
-impl<HANDLER> Drop for Connection<HANDLER> {
-    fn drop(&mut self) {
-        println!("Drop");
-    }
-}
-
 fn parse_headers(buffer: &[u8]) -> Option<usize> {
     // TODO: parse other headers.
     let mut size = 0;
@@ -71,7 +65,7 @@ where HANDLER: HttpHandler,
         self.http_handler.error(error);
     }
 
-    fn received(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) {
+    fn received(&mut self, connection: &mut TcpConnection, data: Vec<u8>) {
         self.buffer.extend(data);
         if self.buffer.ends_with(b"\r\n\r\n") {
             match parse_headers(&self.buffer) {
@@ -88,6 +82,7 @@ where HANDLER: HttpHandler,
             let mut buffer = vec![];
             mem::swap(&mut self.buffer, &mut buffer);
             self.http_handler.response(buffer);
+            connection.dispose();
         }
     }
 }

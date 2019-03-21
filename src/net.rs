@@ -128,7 +128,6 @@ pub mod tcp {
                                                                             // TODO: not sure if it makes sense to report this error to the user.
                                                                             connection_notify.error(error);
                                                                         }
-                                                                        println!("Boxing");
                                                                         manage_connection(&eloop, connection, Box::new(connection_notify))
                                                                         // TODO: stop actor here.
                                                                     },
@@ -157,10 +156,7 @@ pub mod tcp {
                                     Err(_) => send(current, connection_notify, address_infos, count + 1),
                                 }
                             },
-                            None => {
-                                println!("6");
-                                connection_notify.connect_failed()
-                            },
+                            None => connection_notify.connect_failed(),
                         }
                     },
                 }
@@ -180,10 +176,7 @@ pub mod tcp {
                 });
                 send(&pid, connection_notify, address_infos, 0);
             },
-            Err(error) => {
-                println!("7");
-                connection_notify.error(error);
-            },
+            Err(error) => connection_notify.error(error),
         }
     }
 }
@@ -191,6 +184,7 @@ pub mod tcp {
 #[derive(Debug)]
 pub struct AddrInfoIter {
     address_infos: *mut ffi::addrinfo,
+    current_address_info: *mut ffi::addrinfo,
 }
 
 unsafe impl Send for AddrInfoIter {}
@@ -199,6 +193,7 @@ impl AddrInfoIter {
     fn new(address_infos: *mut ffi::addrinfo) -> Self {
         Self {
             address_infos,
+            current_address_info: address_infos,
         }
     }
 }
@@ -207,11 +202,11 @@ impl Iterator for AddrInfoIter {
     type Item = ffi::addrinfo;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.address_infos.is_null() {
+        if self.current_address_info.is_null() {
             return None;
         }
-        let result = unsafe { ptr::read(self.address_infos) };
-        self.address_infos = unsafe { (*self.address_infos).ai_next };
+        let result = unsafe { ptr::read(self.current_address_info) };
+        self.current_address_info = unsafe { (*self.current_address_info).ai_next };
         Some(result)
     }
 }
@@ -324,26 +319,25 @@ impl Buffer {
 pub struct TcpConnection {
     // TODO: should the VecDeque be bounded?
     buffers: VecDeque<Buffer>,
+    disposed: bool,
     stream: TcpStream,
-}
-
-impl Drop for TcpConnection {
-    fn drop(&mut self) {
-        println!("Drop TcpConnection: {:?}", self as *mut _);
-    }
 }
 
 impl TcpConnection {
     pub fn new(stream: TcpStream) -> Self {
-        println!(">>> Created TcpConnection");
         Self {
             buffers: VecDeque::new(),
+            disposed: false,
             stream,
         }
     }
 
     fn as_raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
+    }
+
+    pub fn dispose(&mut self) {
+        self.disposed = true;
     }
 
     pub fn ip4<C>(process_queue: &ProcessQueue, event_loop: &EventLoop, host: &str, port: u16, connection: C)
@@ -442,37 +436,21 @@ pub enum Msg {
 pub struct TcpListener {
 }
 
-#[derive(PartialEq)]
-struct Object {
-}
-
-impl Drop for Object {
-    fn drop(&mut self) {
-        println!("Drop object <<<");
-    }
-}
-
 fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>) {
-    println!("*** Moved TcpConnection 2: {:?}", &mut connection as *mut _);
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
     let fd = connection.as_raw_fd();
     let event_loop = eloop.clone();
     let result = eloop.try_add_raw_fd(fd, Mode::ReadWrite);
-    let object = Object {};
     match result {
         Ok(mut event) => {
-            println!("set_callback");
             event.set_callback(move |event| {
-                if object == object {
-                }
-                println!("C2");
+                let mut disposed = false;
                 if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     if let Err(error) = event_loop.remove_raw_fd(fd) {
                         // TODO: not sure if it makes sense to report this error to the user.
                         connection_notify.error(error);
                     }
-                    println!("4");
                     return Action::Stop;
                 }
                 if event.events & Mode::Read as u32 != 0 {
@@ -482,7 +460,7 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                         // TODO: Might want to reschedule the read to avoid starvation
                         // of other sockets.
                         let mut buffer = vec![0; 4096];
-                        /*match connection.read(&mut buffer) {
+                        match connection.read(&mut buffer) {
                             Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
                                 error.kind() == ErrorKind::Interrupted => break,
                             Ok(bytes_read) => {
@@ -492,15 +470,16 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                                 }
                                 buffer.truncate(bytes_read);
                                 connection_notify.received(&mut connection, buffer);
+                                disposed = disposed || connection.disposed;
                             },
                             _ => (),
-                        }*/
+                        }
                     }
                 }
                 if event.events & Mode::Write as u32 != 0 {
                     let mut remove_buffer = false;
                     // TODO: yield sometimes to avoid starvation?
-                    /*loop {
+                    loop {
                         if let Some(ref mut first_buffer) = connection.buffers.front_mut() {
                             match connection.stream.write(first_buffer.slice()) {
                                 Ok(written) => {
@@ -520,11 +499,15 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                         if remove_buffer {
                             connection.buffers.pop_front();
                         }
-                    }*/
+                    }
                 }
-                Action::Continue
+                if disposed {
+                    Action::Stop
+                }
+                else {
+                    Action::Continue
+                }
             });
-            println!("callback set");
         },
         Err(error) => connection_notify.error(error),
     }
@@ -556,7 +539,6 @@ impl TcpListener {
                     // TODO: not sure if it makes sense to report this error to the user.
                     listen_notify.error(error);
                 }
-                println!("5");
                 return Action::Stop;
             }
             else if event.events & Mode::Read as u32 != 0 {

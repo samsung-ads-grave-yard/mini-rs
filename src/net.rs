@@ -318,7 +318,7 @@ impl Buffer {
 
 pub struct TcpConnection {
     // TODO: should the VecDeque be bounded?
-    buffers: VecDeque<Buffer>,
+    buffers: VecDeque<Buffer>, // The system should probably reuse the buffer and keep adding to it even if the trait does not consume its data. That should be better than a Vec inside a VecDeque.
     disposed: bool,
     stream: TcpStream,
 }
@@ -336,6 +336,7 @@ impl TcpConnection {
         self.stream.as_raw_fd()
     }
 
+    // TODO: in debug mode, warn if dispose is not called (to help in detecting leaks).
     pub fn dispose(&mut self) {
         self.disposed = true;
     }
@@ -549,6 +550,8 @@ impl TcpListener {
                                 let mut connection_notify = listen_notify.connected(&tcp_listener);
                                 let mut connection = TcpConnection::new(stream);
                                 connection_notify.accepted(&mut connection);
+                                // TODO: possibly more efficient to spawn an actor to manage the
+                                // connection in another thread.
                                 manage_connection(&eloop, connection, connection_notify);
                             },
                             Err(error) => listen_notify.error(error),

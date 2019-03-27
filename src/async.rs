@@ -169,6 +169,7 @@ impl EventLoop {
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            // TODO: should probably deallocate memory here.
             return Err(Error::last_os_error());
         }
         Ok(())
@@ -188,6 +189,7 @@ impl EventLoop {
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            // TODO: should probably deallocate memory here.
             return Err(Error::last_os_error());
         }
         Ok(())
@@ -212,6 +214,7 @@ impl EventLoop {
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            // TODO: should probably deallocate memory here.
             return Err(Error::last_os_error());
         }
         Ok(Event::new(callback))
@@ -229,6 +232,7 @@ impl EventLoop {
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            // TODO: should probably deallocate memory here.
             return Err(Error::last_os_error());
         }
         Ok(EventOnce::new(callback))

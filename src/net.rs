@@ -336,7 +336,9 @@ impl TcpConnection {
         self.stream.as_raw_fd()
     }
 
-    // TODO: in debug mode, warn if dispose is not called (to help in detecting leaks).
+    // TODO: in debug mode, warn if dispose is not called (to help in detecting leaks). Maybe
+    // easier to just check if the difference of the number of callbacks allocation - the number of
+    // callbacks deallocation is greater than 0.
     pub fn dispose(&mut self) {
         self.disposed = true;
     }
@@ -448,10 +450,12 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                 let mut disposed = false;
                 if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
+                    // TODO: are we sure we want to remove the fd from epoll when there's an error?
                     if let Err(error) = event_loop.remove_raw_fd(fd) {
                         // TODO: not sure if it makes sense to report this error to the user.
                         connection_notify.error(error);
                     }
+                    connection_notify.closed(&mut connection); // FIXME: should it only be called for HangupError and ShutDown?
                     return Action::Stop;
                 }
                 if event.events & Mode::Read as u32 != 0 {
@@ -503,6 +507,7 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
                     }
                 }
                 if disposed {
+                    connection_notify.closed(&mut connection);
                     Action::Stop
                 }
                 else {
@@ -536,10 +541,12 @@ impl TcpListener {
         event_loop.add_raw_fd(fd, Mode::Read, move |event| {
             if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
                 // TODO: do we want to signal these errors to the trait?
+                // TODO: are we sure we want to remove the fd from epoll when there's an error?
                 if let Err(error) = eloop.remove_raw_fd(fd) {
                     // TODO: not sure if it makes sense to report this error to the user.
                     listen_notify.error(error);
                 }
+                listen_notify.closed(&tcp_listener); // FIXME: should it only be called for HangupError and ShutDown?
                 return Action::Stop;
             }
             else if event.events & Mode::Read as u32 != 0 {

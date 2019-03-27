@@ -1,8 +1,8 @@
 // TODO: make a web crawler example.
 
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io;
-use std::io::ErrorKind;
 use std::mem;
 
 use actor::{
@@ -17,7 +17,7 @@ use net::{
 
 #[derive(Clone)]
 struct Connection<HANDLER> {
-    buffer: Vec<u8>,
+    buffer: VecDeque<u8>,
     content_length: usize,
     http_handler: HANDLER,
     uri: String,
@@ -26,7 +26,7 @@ struct Connection<HANDLER> {
 impl<HANDLER> Connection<HANDLER> {
     fn new(uri: &str, http_handler: HANDLER) -> Self {
         Self {
-            buffer: vec![],
+            buffer: VecDeque::new(),
             content_length: 0,
             http_handler,
             uri: uri.to_string(),
@@ -34,18 +34,62 @@ impl<HANDLER> Connection<HANDLER> {
     }
 }
 
-fn parse_headers(buffer: &[u8]) -> Option<usize> {
-    // TODO: parse other headers.
-    let mut size = 0;
-    for line in buffer.split(|byte| *byte == b'\n') {
-        if line.starts_with(b"Content-Length:") {
-            let mut parts = line.split(|byte| *byte == b':');
-            parts.next()?;
-            let mut value = String::from_utf8_lossy(parts.next()?);
-            size = str::parse(value.trim()).ok()?;
+fn deque_compare(buffer: &VecDeque<u8>, start: usize, len: usize, value: &[u8]) -> bool {
+    if value.len() < len {
+        return false;
+    }
+    let mut index = 0;
+    for i in start..start + len {
+        if buffer[i] != value[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+fn parse_num(buffer: &VecDeque<u8>, start: usize, len: usize) -> Option<usize> {
+    let mut result = 0;
+    for i in start..start + len {
+        if buffer[i] >= b'0' && buffer[i] <= b'9' {
+            result *= 10;
+            result += (buffer[i] - b'0') as usize;
+        }
+        else if result != 0 && buffer[i] != b' ' {
+            return None;
         }
     }
-    Some(size)
+    Some(result)
+}
+
+fn parse_headers(buffer: &VecDeque<u8>) -> Option<usize> {
+    // TODO: parse other headers.
+    let mut start = 0;
+    for i in 0..buffer.len() {
+        if buffer[i] == b'\n' {
+            let text = b"Content-Length:";
+            let end = start + text.len();
+            if deque_compare(buffer, start, text.len(), text) {
+                let num = parse_num(buffer, end, i - 1 - end); // - 1 to remove the \n.
+                return num;
+            }
+            start = i + 1;
+        }
+    }
+    None
+}
+
+fn remove_until_boundary(buffer: &mut VecDeque<u8>) {
+    let mut index = buffer.len() - 1;
+    for i in 0..buffer.len() {
+        if i + 4 <= buffer.len() && deque_compare(&buffer, i, 4, b"\r\n\r\n") {
+            index = i + 4;
+            break;
+        }
+    }
+    for _ in 0..index {
+        buffer.pop_front();
+    }
 }
 
 impl<HANDLER> TcpConnectionNotify for Connection<HANDLER>
@@ -67,21 +111,18 @@ where HANDLER: HttpHandler,
 
     fn received(&mut self, connection: &mut TcpConnection, data: Vec<u8>) {
         self.buffer.extend(data);
-        if self.buffer.ends_with(b"\r\n\r\n") {
+        if self.content_length == 0 {
             match parse_headers(&self.buffer) {
                 Some(content_length) => {
+                    remove_until_boundary(&mut self.buffer);
                     self.content_length = content_length;
-                    let mut buffer = vec![];
-                    mem::swap(&mut self.buffer, &mut buffer);
                 },
-                None => self.http_handler.error(ErrorKind::InvalidData.into()),
+                None => (), // Might find the content length in the next data.
             }
         }
         else if self.buffer.len() >= self.content_length {
-            self.content_length = 0;
-            let mut buffer = vec![];
-            mem::swap(&mut self.buffer, &mut buffer);
-            self.http_handler.response(buffer);
+            let buffer = mem::replace(&mut self.buffer, VecDeque::new());
+            self.http_handler.response(buffer.into());
             connection.dispose();
         }
     }

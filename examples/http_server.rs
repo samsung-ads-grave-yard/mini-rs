@@ -73,5 +73,5 @@ fn main() {
         max_message_per_cycle: 10,
     });
 
-    event_loop.run();
+    event_loop.run().expect("event loop run");
 }

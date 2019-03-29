@@ -158,10 +158,8 @@ impl EventLoop {
     pub fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
     where F: FnMut(ffi::epoll_event) -> Action + 'static,
     {
-        let callback = Box::new(Box::new(NormalCallback::new(callback)));
+        let callback: Box<Box<dyn Callback>> = Box::new(Box::new(NormalCallback::new(callback)));
         let callback_pointer = Box::into_raw(callback);
-        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
-        // the event is a hangup to allow the caller to destroy the callback.
         let mut event = ffi::epoll_event {
             events: mode as u32,
             data: ffi::epoll_data_t {
@@ -178,10 +176,8 @@ impl EventLoop {
     pub fn add_raw_fd_oneshot<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
     where F: FnOnce(ffi::epoll_event) + 'static,
     {
-        let callback = Box::new(Box::new(OneshotCallback::new(callback)));
+        let callback: Box<Box<dyn Callback>> = Box::new(Box::new(OneshotCallback::new(callback)));
         let callback_pointer = Box::into_raw(callback);
-        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
-        // the event is a hangup to allow the caller to destroy the callback.
         let mut event = ffi::epoll_event {
             events: mode as u32 | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
@@ -203,10 +199,8 @@ impl EventLoop {
     }
 
     pub fn try_add_raw_fd(&self, fd: RawFd, mode: Mode) -> io::Result<Event> {
-        let mut callback: Box<Box<Callback>> = Box::new(Box::new(EmptyCallback::new()));
+        let mut callback: Box<Box<dyn Callback>> = Box::new(Box::new(EmptyCallback::new()));
         let callback_pointer = &mut *callback as *mut _;
-        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
-        // the event is a hangup to allow the caller to destroy the callback.
         let mut event = ffi::epoll_event {
             events: mode as u32,
             data: ffi::epoll_data_t {
@@ -221,10 +215,8 @@ impl EventLoop {
     }
 
     pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
-        let mut callback: Box<Box<Callback>> = Box::new(Box::new(EmptyCallback::new()));
+        let mut callback: Box<Box<dyn Callback>> = Box::new(Box::new(EmptyCallback::new()));
         let callback_pointer = &mut * callback as *mut _;
-        // TODO: give the reponsibility to the caller to destroy the callback. Send a message when
-        // the event is a hangup to allow the caller to destroy the callback.
         let mut event = ffi::epoll_event {
             events: mode as u32 | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
@@ -257,8 +249,8 @@ impl EventLoop {
             // Safety: it's safe to access the callback as a mutable reference here because only
             // this function can access the callbacks since they are only stored in the epoll data.
             unsafe {
-                let callback_pointer = event.data.u64 as *mut Box<Callback>;
-                if let Action::Stop = (*callback_pointer).call(event) {
+                let callback_pointer: &mut Box<Callback> = &mut *(event.data.u64 as *mut Box<Callback>);
+                if let Action::Stop = callback_pointer.call(event) {
                     // Destroy the callback.
                     Box::from_raw(callback_pointer);
                 }

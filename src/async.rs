@@ -11,6 +11,7 @@ use std::io::{
 use std::mem;
 use std::os::unix::io::RawFd;
 use std::ptr;
+use std::thread;
 
 const MAX_EVENTS: usize = 100;
 
@@ -33,6 +34,7 @@ struct EmptyCallback {
 
 impl EmptyCallback {
     fn new() -> Self {
+        println!("New empty Callback");
         Self {
         }
     }
@@ -127,9 +129,11 @@ impl EventOnce {
     pub fn set_callback<F>(&mut self, callback: F)
     where F: FnOnce(ffi::epoll_event) + 'static,
     {
+        let callback: Box<dyn Callback> = Box::new(OneshotCallback::new(callback));
         unsafe {
-            (*self.callback) = Box::new(OneshotCallback::new(callback));
+            (*self.callback) = callback;
         }
+        println!("Setttt: {:?}", self.callback);
     }
 }
 
@@ -158,6 +162,7 @@ impl EventLoop {
     pub fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
     where F: FnMut(ffi::epoll_event) -> Action + 'static,
     {
+        // NOTE: keep the following type annotation to store the vtable.
         let callback: Box<Box<dyn Callback>> = Box::new(Box::new(NormalCallback::new(callback)));
         let callback_pointer = Box::into_raw(callback);
         let mut event = ffi::epoll_event {
@@ -176,6 +181,7 @@ impl EventLoop {
     pub fn add_raw_fd_oneshot<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
     where F: FnOnce(ffi::epoll_event) + 'static,
     {
+        // NOTE: keep the following type annotation to store the vtable.
         let callback: Box<Box<dyn Callback>> = Box::new(Box::new(OneshotCallback::new(callback)));
         let callback_pointer = Box::into_raw(callback);
         let mut event = ffi::epoll_event {
@@ -199,6 +205,8 @@ impl EventLoop {
     }
 
     pub fn try_add_raw_fd(&self, fd: RawFd, mode: Mode) -> io::Result<Event> {
+        // NOTE: keep the following type annotation to store the vtable.
+        println!("A");
         let mut callback: Box<Box<dyn Callback>> = Box::new(Box::new(EmptyCallback::new()));
         let callback_pointer = &mut *callback as *mut _;
         let mut event = ffi::epoll_event {
@@ -215,8 +223,10 @@ impl EventLoop {
     }
 
     pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
+        // NOTE: keep the following type annotation to store the vtable.
         let mut callback: Box<Box<dyn Callback>> = Box::new(Box::new(EmptyCallback::new()));
-        let callback_pointer = &mut * callback as *mut _;
+        let callback_pointer = &mut *callback as *mut _;
+        println!("B: {:?}", callback_pointer);
         let mut event = ffi::epoll_event {
             events: mode as u32 | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
@@ -249,6 +259,7 @@ impl EventLoop {
             // Safety: it's safe to access the callback as a mutable reference here because only
             // this function can access the callbacks since they are only stored in the epoll data.
             unsafe {
+                //println!("Callback ptr: 0x{:x}", event.data.u64);
                 let callback_pointer: &mut Box<Callback> = &mut *(event.data.u64 as *mut Box<Callback>);
                 if let Action::Stop = callback_pointer.call(event) {
                     // Destroy the callback.
@@ -271,6 +282,14 @@ impl EventLoop {
                 EpollResult::Ok => (),
             }
         }
+    }
+
+    pub fn spawn(self) {
+        thread::spawn(move || {
+            if let Err(error) = self.run() {
+                eprintln!("Error running event loop: {}", error);
+            }
+        });
     }
 }
 

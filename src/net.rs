@@ -579,7 +579,7 @@ pub enum Msg {
 pub struct TcpListener {
 }
 
-fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>, write_actor: Option<Pid<ConnectionMsg>>) {
+fn manage_connection(event_loop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>, write_actor: Option<Pid<ConnectionMsg>>) {
     println!("1");
     if let Some(ref write_actor) = write_actor {
         println!("Sending Connected");
@@ -587,8 +587,8 @@ fn manage_connection(eloop: &EventLoop, mut connection: TcpConnection, mut conne
     }
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
     let fd = connection.as_raw_fd();
-    let event_loop = eloop.clone();
-    let result = eloop.try_add_raw_fd(fd, Mode::ReadWrite);
+    let result = event_loop.try_add_raw_fd(fd, Mode::ReadWrite);
+    let event_loop = event_loop.clone();
     match result {
         Ok(mut event) => {
             event.set_callback(move |event| {
@@ -664,13 +664,13 @@ impl TcpListener {
                 },
             };
         tcp_listener.set_nonblocking(true)?;
-        let eloop = event_loop.clone();
+        let event_loop = event_loop.clone();
         let fd = tcp_listener.as_raw_fd();
         event_loop.add_raw_fd(fd, Mode::Read, move |event| {
             if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
                 // TODO: do we want to signal these errors to the trait?
                 // TODO: are we sure we want to remove the fd from epoll when there's an error?
-                if let Err(error) = eloop.remove_raw_fd(fd) {
+                if let Err(error) = event_loop.remove_raw_fd(fd) {
                     // TODO: not sure if it makes sense to report this error to the user.
                     listen_notify.error(error);
                 }
@@ -687,7 +687,7 @@ impl TcpListener {
                                 connection_notify.accepted(&mut connection);
                                 // TODO: possibly more efficient to spawn an actor to manage the
                                 // connection in another thread.
-                                manage_connection(&eloop, connection, connection_notify, None);
+                                manage_connection(&event_loop, connection, connection_notify, None);
                             },
                             Err(error) => listen_notify.error(error),
                         }

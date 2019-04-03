@@ -6,15 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use mini::actor::{
-    ProcessQueue,
-    SpawnParameters,
-};
 use mini::async::{
     EpollResult,
     EventLoop,
     event_list,
 };
+use mini::handler::Loop;
 use mini::net::{
     TcpConnection,
     TcpConnectionNotify,
@@ -39,7 +36,7 @@ impl TcpListenNotify for Listener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify + Send> {
+    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify> {
         Box::new(Server {})
     }
 }
@@ -65,14 +62,9 @@ impl TcpConnectionNotify for Server {
 
 #[test]
 fn test_blocked_write() {
-    let process_queue = ProcessQueue::new(20, 4);
-    let event_loop = EventLoop::new().expect("event loop");
+    let mut event_loop = Loop::new().expect("event loop");
 
-    process_queue.blocking_spawn(SpawnParameters {
-        handler: ActorTcpListener::ip4(&event_loop, "127.0.0.1:1337", Listener {}).expect("ip4 listener"),
-        message_capacity: 20,
-        max_message_per_cycle: 10,
-    });
+    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {});
 
     let done = Arc::new(AtomicBool::new(false));
 

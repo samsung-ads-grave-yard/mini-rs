@@ -5,11 +5,8 @@ use std::fmt::Debug;
 use std::io;
 use std::mem;
 
-use actor::{
-    Pid,
-    ProcessQueue,
-};
 use async::EventLoop;
+use handler::Stream;
 use net::{
     TcpConnection,
     TcpConnectionNotify,
@@ -136,14 +133,14 @@ pub trait HttpHandler {
 }
 
 pub struct DefaultHttpHandler<MSG, SuccessMsg> {
-    actor: Pid<MSG>,
+    handle: Stream<MSG>,
     success_msg: SuccessMsg,
 }
 
 impl<MSG, SuccessMsg> DefaultHttpHandler<MSG, SuccessMsg> {
-    pub fn new(actor: &Pid<MSG>, success_msg: SuccessMsg) -> Self {
+    pub fn new(handle: &Stream<MSG>, success_msg: SuccessMsg) -> Self {
         Self {
-            actor: actor.clone(),
+            handle: handle.clone(),
             success_msg,
         }
     }
@@ -154,25 +151,23 @@ where MSG: Debug,
       SuccessMsg: Fn(Vec<u8>) -> MSG,
 {
     fn response(&mut self, data: Vec<u8>) {
-        let _ = self.actor.send_message((self.success_msg)(data));
+        //let _ = self.actor.send_message((self.success_msg)(data));
     }
 }
 
 pub struct Http {
-    process_queue: ProcessQueue,
 }
 
 impl Http {
     pub fn new() -> Self {
         Self {
-            process_queue: ProcessQueue::new(10, 2),
         }
     }
 
     pub fn get<HANDLER>(&self, uri: &str, http_handler: HANDLER, event_loop: &EventLoop)
     where HANDLER: HttpHandler + Send + 'static,
     {
-        TcpConnection::ip4(&self.process_queue, event_loop, uri, 80, Connection::new(uri, http_handler));
+        TcpConnection::ip4(event_loop, uri, 80, Connection::new(uri, http_handler));
     }
 }
 

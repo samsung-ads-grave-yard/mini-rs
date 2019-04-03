@@ -17,16 +17,20 @@ use std::ptr;
 use std::rc::Rc;
 use std::str;
 
-use actor::{
-    Pid,
-    ProcessContinuation,
-    ProcessQueue,
-};
 use async::{
+    self,
     Action,
     EventLoop,
     Mode,
 };
+use async::ffi::epoll_event;
+use handler::{
+    Loop,
+    Handler,
+    Stream,
+};
+
+use self::Msg::*;
 
 /*fn get_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<bool> {
     let val = unsafe { ffi::fcntl(socket.as_raw_fd(), ffi::F_GETFL, 0) };
@@ -43,17 +47,11 @@ pub mod tcp {
     use std::net::TcpStream;
     use std::os::unix::io::FromRawFd;
 
-    use actor::{
-        self,
-        Pid,
-        ProcessContinuation,
-        ProcessQueue,
-        SpawnParameters,
-    };
     use async::{
         EventLoop,
         Mode,
     };
+    use handler::Stream;
     use self::ffi::ErrNo;
     use self::Msg::*;
     use super::{
@@ -76,24 +74,20 @@ pub mod tcp {
         TryingConnectionToHost(AddrInfoIter, u32, CONNECTION),
     }
 
-    pub fn connect_to_host<CONNECTION>(host: &str, port: &str, process_queue: &ProcessQueue,
-        event_loop: &EventLoop, mut connection_notify: CONNECTION) -> Pid<ConnectionMsg>
+    /*pub fn connect_to_host<CONNECTION>(host: &str, port: &str,
+        event_loop: &EventLoop, mut connection_notify: CONNECTION) -> Stream<ConnectionMsg>
     where CONNECTION: TcpConnectionNotify + Send + 'static,
     {
-        fn send<CONNECTION>(pid: &Pid<Msg<CONNECTION>>, connection_notify: CONNECTION, address_infos: AddrInfoIter,
+        fn send<CONNECTION>(pid: &Stream<Msg<CONNECTION>>, connection_notify: CONNECTION, address_infos: AddrInfoIter,
                             count: u32)
         where CONNECTION: TcpConnectionNotify,
         {
-            if let Err(actor::Error { msg: TryingConnectionToHost(_, _, mut connection_notify), .. }) =
-                pid.send_message(TryingConnectionToHost(address_infos, count, connection_notify))
-            {
-                connection_notify.error(ErrorKind::Other.into()); // TODO: use a new error type.
-            }
+            pid.send_message(TryingConnectionToHost(address_infos, count, connection_notify))
         }
 
         let mut buffers = VecDeque::new();
         let mut actor_stream = None;
-        let handler = move |_current: &Pid<_>, msg| {
+        let handler = move |msg| {
             if let Some(msg) = msg {
                 match msg {
                     ConnectionMsg::Connected(stream) => {
@@ -154,18 +148,13 @@ pub mod tcp {
                     },
                 }
             }
-            ProcessContinuation::WaitMessage
         };
-        let write_actor = process_queue.blocking_spawn(SpawnParameters {
-            handler,
-            message_capacity: 20,
-            max_message_per_cycle: 4,
-        });
+        let write_actor = process_queue.blocking_spawn(handler);
 
         let handler = {
             let write_actor = write_actor.clone();
             let event_loop = event_loop.clone();
-            move |current: &Pid<_>, msg: Option<Msg<CONNECTION>>| {
+            move |current: &Stream<_>, msg: Option<Msg<CONNECTION>>| {
                 if let Some(msg) = msg {
                     match msg {
                         TryingConnectionToHost(mut address_infos, count, mut connection_notify) => {
@@ -185,7 +174,7 @@ pub mod tcp {
                                                 Ok(()) => {
                                                     println!("Connected");
                                                     manage_connection(&event_loop, connection, Box::new(connection_notify), Some(write_actor.clone()));
-                                                    return ProcessContinuation::Stop;
+                                                    //return ProcessContinuation::Stop;
                                                 },
                                                 Err(ref error) if error.raw_os_error() == Some(ErrNo::InProgress as i32) => {
                                                     println!("4");
@@ -253,7 +242,6 @@ pub mod tcp {
                         },
                     }
                 }
-                ProcessContinuation::WaitMessage
             }
         };
 
@@ -262,18 +250,14 @@ pub mod tcp {
         // TODO: use getaddrinfo_a which is asynchronous. Maybe not: https://medium.com/where-the-flamingcow-roams/asynchronous-name-resolution-in-c-268ff5df3081
         match getaddrinfo(Some(host), Some(port), Some(hints)) {
             Ok(address_infos) => {
-                let pid = process_queue.blocking_spawn(SpawnParameters {
-                    handler,
-                    message_capacity: 2,
-                    max_message_per_cycle: 1,
-                });
+                let pid = process_queue.blocking_spawn(handler);
                 send(&pid, connection_notify, address_infos, 0);
             },
             Err(error) => connection_notify.error(error),
         }
 
         write_actor
-    }
+    }*/
 }
 
 #[derive(Debug)]
@@ -412,10 +396,14 @@ impl Buffer {
     }
 }
 
-pub enum ConnectionMsg {
+/*pub enum ConnectionMsg {
     Connected(TcpStream),
     Send,
     Write(Vec<u8>),
+}*/
+
+pub enum ConnectionMsg {
+    ReadWrite(epoll_event),
 }
 
 struct _TcpConnection {
@@ -423,6 +411,34 @@ struct _TcpConnection {
     buffers: VecDeque<Buffer>, // The system should probably reuse the buffer and keep adding to it even if the trait does not consume its data. That should be better than a Vec inside a VecDeque.
     disposed: bool,
     stream: TcpStream,
+}
+
+impl _TcpConnection {
+    fn send(&mut self, connection_notify: &mut TcpConnectionNotify) {
+        let mut remove_buffer = false;
+        // TODO: yield sometimes to avoid starvation?
+        loop {
+            if let Some(ref mut first_buffer) = self.buffers.front_mut() {
+                match self.stream.write(first_buffer.slice()) {
+                    Ok(written) => {
+                        first_buffer.advance(written);
+                        if first_buffer.exhausted() {
+                            remove_buffer = true;
+                        }
+                    },
+                    Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+                    Err(error) => connection_notify.error(error),
+                }
+            }
+            else {
+                break;
+            }
+            if remove_buffer {
+                self.buffers.pop_front();
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -456,11 +472,12 @@ impl TcpConnection {
         self.connection.borrow().disposed
     }
 
-    pub fn ip4<C>(process_queue: &ProcessQueue, event_loop: &EventLoop, host: &str, port: u16, connection: C)
-        -> Pid<ConnectionMsg>
+    pub fn ip4<C>(event_loop: &EventLoop, host: &str, port: u16, connection: C)
+        -> Stream<ConnectionMsg>
     where C: TcpConnectionNotify + Send + 'static,
     {
-        tcp::connect_to_host(host, &port.to_string(), process_queue, event_loop, connection)
+        unimplemented!();
+        //tcp::connect_to_host(host, &port.to_string(), event_loop, connection)
     }
 
     fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -468,29 +485,8 @@ impl TcpConnection {
     }
 
     fn send(&self, connection_notify: &mut TcpConnectionNotify) {
-        let mut remove_buffer = false;
-        // TODO: yield sometimes to avoid starvation?
-        loop {
-            if let Some(ref mut first_buffer) = self.connection.borrow_mut().buffers.front_mut() {
-                match self.connection.borrow_mut().stream.write(first_buffer.slice()) {
-                    Ok(written) => {
-                        first_buffer.advance(written);
-                        if first_buffer.exhausted() {
-                            remove_buffer = true;
-                        }
-                    },
-                    Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                    Err(error) => connection_notify.error(error),
-                }
-            }
-            else {
-                break;
-            }
-            if remove_buffer {
-                self.connection.borrow_mut().buffers.pop_front();
-            }
-        }
+        let mut connection = self.connection.borrow_mut();
+        connection.send(connection_notify);
     }
 
     pub fn write(&self, buffer: Vec<u8>) -> io::Result<()> {
@@ -511,6 +507,72 @@ impl TcpConnection {
                     }
                 },
             }
+        }
+    }
+}
+
+struct ConnectionComponent {
+    connection: TcpConnection,
+    connection_notify: Box<TcpConnectionNotify>,
+}
+
+impl ConnectionComponent {
+    fn new(connection: TcpConnection, connection_notify: Box<TcpConnectionNotify>) -> Self {
+        Self {
+            connection,
+            connection_notify,
+        }
+    }
+}
+
+impl Handler for ConnectionComponent {
+    type Msg = ConnectionMsg;
+
+    fn update(&mut self, event_loop: &mut Loop, msg: Self::Msg) {
+        match msg {
+            ConnectionMsg::ReadWrite(event) => {
+                let mut disposed = false;
+                if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                    // TODO: do we want to signal these errors to the trait?
+                    // TODO: are we sure we want to remove the fd from epoll when there's an error?
+                    if let Err(error) = event_loop.remove_raw_fd(self.connection.as_raw_fd()) {
+                        // TODO: not sure if it makes sense to report this error to the user.
+                        self.connection_notify.error(error);
+                    }
+                    self.connection_notify.closed(&mut self.connection); // FIXME: should it only be called for HangupError and ShutDown?
+                    // TODO: stop.
+                }
+                if event.events & Mode::Read as u32 != 0 {
+                    loop {
+                        // Loop to read everything because the edge-triggered mode is
+                        // used and it only notifies once per readiness.
+                        // TODO: Might want to reschedule the read to avoid starvation
+                        // of other sockets.
+                        let mut buffer = vec![0; 4096];
+                        match self.connection.read(&mut buffer) {
+                            Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                                error.kind() == ErrorKind::Interrupted => break,
+                            Ok(bytes_read) => {
+                                if bytes_read == 0 {
+                                    // The connection has been shut down.
+                                    break;
+                                }
+                                buffer.truncate(bytes_read);
+                                self.connection_notify.received(&mut self.connection, buffer);
+                                disposed = disposed || self.connection.disposed();
+                            },
+                            _ => (),
+                        }
+                    }
+                }
+                if event.events & Mode::Write as u32 != 0 {
+                    self.connection.send(&mut *self.connection_notify);
+                }
+                if disposed {
+                    self.connection_notify.closed(&mut self.connection);
+                    // TODO: stop
+                }
+            },
         }
     }
 }
@@ -574,23 +636,21 @@ pub trait TcpConnectionNotify {
 }
 
 pub enum Msg {
+    ReadEvent(epoll_event),
 }
 
-pub struct TcpListener {
-}
-
-fn manage_connection(event_loop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>, write_actor: Option<Pid<ConnectionMsg>>) {
+fn manage_connection(event_loop: &EventLoop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>, write_actor: Option<Stream<ConnectionMsg>>) {
     println!("1");
-    if let Some(ref write_actor) = write_actor {
+    /*if let Some(ref write_actor) = write_actor {
         println!("Sending Connected");
-        write_actor.send_message(ConnectionMsg::Connected(connection.connection.borrow().stream.try_clone().expect("try clone"))); // TODO: handle error.
-    }
+        write_actor.send(ConnectionMsg::Connected(connection.connection.borrow().stream.try_clone().expect("try clone"))); // TODO: handle error.
+    }*/
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
     let fd = connection.as_raw_fd();
     let result = event_loop.try_add_raw_fd(fd, Mode::ReadWrite);
     let event_loop = event_loop.clone();
     match result {
-        Ok(mut event) => {
+        Ok(event) => {
             event.set_callback(move |event| {
                 let mut disposed = false;
                 if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
@@ -627,12 +687,12 @@ fn manage_connection(event_loop: &EventLoop, mut connection: TcpConnection, mut 
                     }
                 }
                 if event.events & Mode::Write as u32 != 0 {
-                    if let Some(ref write_actor) = write_actor {
-                        write_actor.send_message(ConnectionMsg::Send); // TODO: handle error.
+                    /*if let Some(ref write_actor) = write_actor {
+                        write_actor.send(ConnectionMsg::Send); // TODO: handle error.
                     }
-                    else {
+                    else {*/
                         connection.send(&mut *connection_notify);
-                    }
+                    //}
                 }
                 if disposed {
                     connection_notify.closed(&mut connection);
@@ -647,9 +707,21 @@ fn manage_connection(event_loop: &EventLoop, mut connection: TcpConnection, mut 
     }
 }
 
-impl TcpListener {
-    pub fn ip4<L>(event_loop: &EventLoop, host: &str, mut listen_notify: L)
-        -> io::Result<impl FnMut(&Pid<Msg>, Option<Msg>) -> ProcessContinuation>
+pub struct TcpListener<L> {
+    listen_notify: L,
+    tcp_listener: net::TcpListener,
+}
+
+impl<L> TcpListener<L> {
+    fn new(tcp_listener: net::TcpListener, listen_notify: L) -> Self {
+        Self {
+            listen_notify,
+            tcp_listener,
+        }
+    }
+
+    pub fn ip4(event_loop: &mut Loop, host: &str, mut listen_notify: L)
+        -> io::Result<Stream<Msg>>
     where L: TcpListenNotify + Send + 'static,
     {
         let tcp_listener =
@@ -664,46 +736,65 @@ impl TcpListener {
                 },
             };
         tcp_listener.set_nonblocking(true)?;
-        let event_loop = event_loop.clone();
         let fd = tcp_listener.as_raw_fd();
-        event_loop.add_raw_fd(fd, Mode::Read, move |event| {
-            if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
-                // TODO: do we want to signal these errors to the trait?
-                // TODO: are we sure we want to remove the fd from epoll when there's an error?
-                if let Err(error) = event_loop.remove_raw_fd(fd) {
-                    // TODO: not sure if it makes sense to report this error to the user.
-                    listen_notify.error(error);
+        let stream = event_loop.spawn(TcpListener::new(tcp_listener, listen_notify));
+        event_loop.add_raw_fd(fd, Mode::Read, &stream, ReadEvent)?;
+        Ok(stream)
+    }
+}
+
+impl<L> Handler for TcpListener<L>
+where L: TcpListenNotify + Send + 'static,
+{
+    type Msg = Msg;
+
+    fn update(&mut self, event_loop: &mut Loop, msg: Self::Msg) {
+        match msg {
+            ReadEvent(event) => {
+                if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                    // TODO: do we want to signal these errors to the trait?
+                    // TODO: are we sure we want to remove the fd from epoll when there's an error?
+                    if let Err(error) = event_loop.remove_raw_fd(self.tcp_listener.as_raw_fd()) { // TODO: do a version of this method that takes a AsRawFd.
+                        // TODO: not sure if it makes sense to report this error to the user.
+                        self.listen_notify.error(error);
+                    }
+                    self.listen_notify.closed(&&self.tcp_listener); // FIXME: should it only be called for HangupError and ShutDown?
+                    // TODO: remove this handler.
                 }
-                listen_notify.closed(&tcp_listener); // FIXME: should it only be called for HangupError and ShutDown?
-                return Action::Stop;
-            }
-            else if event.events & Mode::Read as u32 != 0 {
-                match tcp_listener.accept() {
-                    Ok((stream, _addr)) => {
-                        match stream.set_nonblocking(true) {
-                            Ok(()) => {
-                                let mut connection_notify = listen_notify.connected(&tcp_listener);
-                                let mut connection = TcpConnection::new(stream);
-                                connection_notify.accepted(&mut connection);
-                                // TODO: possibly more efficient to spawn an actor to manage the
-                                // connection in another thread.
-                                manage_connection(&event_loop, connection, connection_notify, None);
-                            },
-                            Err(error) => listen_notify.error(error),
-                        }
-                    },
-                    Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                    },
-                    Err(error) => listen_notify.error(error),
+                else if event.events & Mode::Read as u32 != 0 {
+                    match self.tcp_listener.accept() {
+                        Ok((stream, _addr)) => {
+                            match stream.set_nonblocking(true) {
+                                Ok(()) => {
+                                    let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
+                                    let mut connection = TcpConnection::new(stream);
+                                    connection_notify.accepted(&mut connection);
+                                    // TODO: possibly more efficient to spawn an actor to manage the
+                                    // connection in another thread.
+                                    //manage_connection(&eloop, connection, connection_notify, None);
+                                    connection_notify.connected(&mut connection); // TODO: is this second method necessary?
+                                    let fd = connection.as_raw_fd();
+
+                                    match event_loop.try_add_raw_fd(fd, Mode::ReadWrite) {
+                                        Ok(event) => {
+                                            let stream = event_loop.spawn(ConnectionComponent::new(connection, connection_notify));
+                                            event.set_callback(&stream, ConnectionMsg::ReadWrite);
+                                        },
+                                        Err(error) => connection_notify.error(error),
+                                    }
+                                },
+                                Err(error) => self.listen_notify.error(error),
+                            }
+                        },
+                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
+                        },
+                        Err(error) => self.listen_notify.error(error),
+                    }
                 }
-            }
-            Action::Continue
-        })?;
-        // TODO: call listen_notify.closed().
-        Ok(|_current: &Pid<_>, _msg| {
-            // TODO: have a message Dispose to stop listening.
-            ProcessContinuation::WaitMessage
-        })
+                // TODO: call listen_notify.closed().
+                // TODO: have a message Dispose to stop listening.
+            },
+        }
     }
 }
 

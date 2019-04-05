@@ -5,31 +5,11 @@ use std::fmt::Debug;
 use std::io;
 use std::mem;
 
-use async::EventLoop;
-use handler::Stream;
+use handler::{Loop, Stream};
 use net::{
     TcpConnection,
     TcpConnectionNotify,
 };
-
-#[derive(Clone)]
-struct Connection<HANDLER> {
-    buffer: VecDeque<u8>,
-    content_length: usize,
-    http_handler: HANDLER,
-    uri: String,
-}
-
-impl<HANDLER> Connection<HANDLER> {
-    fn new(uri: &str, http_handler: HANDLER) -> Self {
-        Self {
-            buffer: VecDeque::new(),
-            content_length: 0,
-            http_handler,
-            uri: uri.to_string(),
-        }
-    }
-}
 
 fn deque_compare(buffer: &VecDeque<u8>, start: usize, len: usize, value: &[u8]) -> bool {
     if value.len() < len {
@@ -89,6 +69,25 @@ fn remove_until_boundary(buffer: &mut VecDeque<u8>) {
     }
 }
 
+#[derive(Clone)]
+struct Connection<HANDLER> {
+    buffer: VecDeque<u8>,
+    content_length: usize,
+    handler: HANDLER,
+    uri: String,
+}
+
+impl<HANDLER> Connection<HANDLER> {
+    fn new(uri: &str, handler: HANDLER) -> Self {
+        Self {
+            buffer: VecDeque::new(),
+            content_length: 0,
+            handler,
+            uri: uri.to_string(),
+        }
+    }
+}
+
 impl<HANDLER> TcpConnectionNotify for Connection<HANDLER>
 where HANDLER: HttpHandler,
 {
@@ -98,12 +97,12 @@ where HANDLER: HttpHandler,
 
     fn connected(&mut self, connection: &mut TcpConnection) {
         if let Err(error) = connection.write(format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", self.uri).into_bytes()) {
-            self.http_handler.error(error);
+            self.handler.error(error);
         }
     }
 
     fn error(&mut self, error: io::Error) {
-        self.http_handler.error(error);
+        self.handler.error(error);
     }
 
     fn received(&mut self, connection: &mut TcpConnection, data: Vec<u8>) {
@@ -119,7 +118,7 @@ where HANDLER: HttpHandler,
         }
         else if self.buffer.len() >= self.content_length {
             let buffer = mem::replace(&mut self.buffer, VecDeque::new());
-            self.http_handler.response(buffer.into());
+            self.handler.response(buffer.into());
             connection.dispose();
         }
     }
@@ -132,26 +131,56 @@ pub trait HttpHandler {
     }
 }
 
-pub struct DefaultHttpHandler<MSG, SuccessMsg> {
-    handle: Stream<MSG>,
+pub struct DefaultHttpHandler<ErrorMsg, MSG, SuccessMsg> {
+    error_msg: ErrorMsg,
+    stream: Stream<MSG>,
     success_msg: SuccessMsg,
 }
 
-impl<MSG, SuccessMsg> DefaultHttpHandler<MSG, SuccessMsg> {
-    pub fn new(handle: &Stream<MSG>, success_msg: SuccessMsg) -> Self {
+impl<ErrorMsg, MSG, SuccessMsg> DefaultHttpHandler<ErrorMsg, MSG, SuccessMsg> {
+    pub fn new(stream: &Stream<MSG>, success_msg: SuccessMsg, error_msg: ErrorMsg) -> Self {
         Self {
-            handle: handle.clone(),
+            error_msg,
+            stream: stream.clone(),
             success_msg,
         }
     }
 }
 
-impl<MSG, SuccessMsg> HttpHandler for DefaultHttpHandler<MSG, SuccessMsg>
+impl<ErrorMsg, MSG, SuccessMsg> HttpHandler for DefaultHttpHandler<ErrorMsg, MSG, SuccessMsg>
+where MSG: Debug,
+      ErrorMsg: Fn(io::Error) -> MSG,
+      SuccessMsg: Fn(Vec<u8>) -> MSG,
+{
+    fn error(&mut self, error: io::Error) {
+        self.stream.send((self.error_msg)(error));
+    }
+
+    fn response(&mut self, data: Vec<u8>) {
+        self.stream.send((self.success_msg)(data));
+    }
+}
+
+pub struct HttpHandlerIgnoreErr<MSG, SuccessMsg> {
+    stream: Stream<MSG>,
+    success_msg: SuccessMsg,
+}
+
+impl<MSG, SuccessMsg> HttpHandlerIgnoreErr<MSG, SuccessMsg> {
+    pub fn new(stream: &Stream<MSG>, success_msg: SuccessMsg) -> Self {
+        Self {
+            stream: stream.clone(),
+            success_msg,
+        }
+    }
+}
+
+impl<MSG, SuccessMsg> HttpHandler for HttpHandlerIgnoreErr<MSG, SuccessMsg>
 where MSG: Debug,
       SuccessMsg: Fn(Vec<u8>) -> MSG,
 {
     fn response(&mut self, data: Vec<u8>) {
-        //let _ = self.actor.send_message((self.success_msg)(data));
+        self.stream.send((self.success_msg)(data));
     }
 }
 
@@ -164,10 +193,10 @@ impl Http {
         }
     }
 
-    pub fn get<HANDLER>(&self, uri: &str, http_handler: HANDLER, event_loop: &EventLoop)
-    where HANDLER: HttpHandler + Send + 'static,
+    pub fn get<HANDLER>(&self, uri: &str, event_loop: &mut Loop, handler: HANDLER)
+    where HANDLER: HttpHandler + 'static,
     {
-        TcpConnection::ip4(event_loop, uri, 80, Connection::new(uri, http_handler));
+        TcpConnection::ip4(event_loop, uri, 80, Connection::new(uri, handler));
     }
 }
 

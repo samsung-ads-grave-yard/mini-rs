@@ -8,7 +8,6 @@ use std::thread;
 
 use mini::async::{
     EpollResult,
-    EventLoop,
     event_list,
 };
 use mini::handler::Loop;
@@ -64,7 +63,7 @@ impl TcpConnectionNotify for Server {
 fn test_blocked_write() {
     let mut event_loop = Loop::new().expect("event loop");
 
-    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {});
+    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {}).expect("listen");
 
     let done = Arc::new(AtomicBool::new(false));
 

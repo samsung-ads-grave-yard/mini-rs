@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{
+    AsRawFd,
+    RawFd,
+};
 use std::rc::Rc;
 
 use async::{
@@ -34,15 +37,20 @@ impl<MSG> Stream<MSG> {
         }
     }
 
+    fn pop(&self) -> Option<MSG> {
+        self.elements.borrow_mut().pop_front()
+    }
+
     pub fn send(&self, msg: MSG) {
         self.elements.borrow_mut().push_back(msg);
+        EventLoop::wakeup();
     }
 }
 
 pub trait Handler {
     type Msg;
 
-    fn update(&mut self, handler_loop: &mut Loop, msg: Self::Msg);
+    fn update(&mut self, handler_loop: &mut Loop, stream: &Stream<Self::Msg>, msg: Self::Msg);
 }
 
 struct Component<HANDLER: Handler<Msg=MSG>, MSG> {
@@ -56,9 +64,8 @@ trait Callable {
 
 impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
     fn process(&mut self, handler_loop: &mut Loop) {
-        let mut messages = self.stream.elements.borrow_mut();
-        while let Some(msg) = messages.pop_front() {
-            self.handler.update(handler_loop, msg);
+        while let Some(msg) = self.stream.pop() {
+            self.handler.update(handler_loop, &self.stream, msg);
         }
     }
 }
@@ -74,6 +81,13 @@ impl Loop {
             event_loop: EventLoop::new()?,
             handlers: Slab::new(),
         })
+    }
+
+    pub fn add_fd<A: AsRawFd, CALLBACK, MSG>(&self, as_fd: &A, mode: Mode, stream: &Stream<MSG>, callback: CALLBACK) -> io::Result<()>
+    where CALLBACK: Fn(epoll_event) -> MSG + 'static,
+          MSG: 'static,
+    {
+        self.add_raw_fd(as_fd.as_raw_fd(), mode, stream, callback)
     }
 
     pub fn add_raw_fd<CALLBACK, MSG>(&self, fd: RawFd, mode: Mode, stream: &Stream<MSG>, callback: CALLBACK) -> io::Result<()>
@@ -132,8 +146,16 @@ impl Loop {
         }
     }
 
+    pub fn try_add_fd<A: AsRawFd>(&self, as_fd: &A, mode: Mode) -> io::Result<Event> {
+        self.try_add_raw_fd(as_fd.as_raw_fd(), mode)
+    }
+
     pub fn try_add_raw_fd(&self, fd: RawFd, mode: Mode) -> io::Result<Event> {
         Ok(Event::new(self.event_loop.try_add_raw_fd(fd, mode)?))
+    }
+
+    pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
+        Ok(EventOnce::new(self.event_loop.try_add_raw_fd_oneshot(fd, mode)?))
     }
 }
 
@@ -157,5 +179,25 @@ impl Event {
             stream.send(callback(event));
             Action::Continue
         });
+    }
+}
+
+pub struct EventOnce {
+    event: async::EventOnce,
+}
+
+impl EventOnce {
+    fn new(event: async::EventOnce) -> Self {
+        Self {
+            event,
+        }
+    }
+
+    pub fn set_callback<CALLBACK, MSG>(self, stream: &Stream<MSG>, callback: CALLBACK)
+    where CALLBACK: FnOnce(epoll_event) -> MSG + 'static,
+          MSG: 'static,
+    {
+        let stream = stream.clone();
+        self.event.set_callback(move |event| stream.send(callback(event)));
     }
 }

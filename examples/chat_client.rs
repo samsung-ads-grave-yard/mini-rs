@@ -1,13 +1,19 @@
 extern crate mini;
 
-use std::io::{self, BufRead, stdin};
+use std::io;
 
-use mini::actor::ProcessQueue;
-use mini::async::EventLoop;
+use mini::handler::{
+    Loop,
+    Stream,
+};
 use mini::net::{
-    ConnectionMsg::Write,
+    ConnectionMsg::{self, Write},
     TcpConnection,
     TcpConnectionNotify,
+};
+use mini::stdio::{
+    InputNotify,
+    Stdin,
 };
 
 struct Connection {
@@ -35,28 +41,36 @@ impl TcpConnectionNotify for Connection {
 
     fn received(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) {
         match String::from_utf8(data) {
-            Ok(text) => println!("{}", text),
+            Ok(text) => print!("-> {}", text),
             Err(error) => println!("Error: did not receive valid UTF-8: {}", error),
         }
     }
 }
 
-fn main() {
-    let process_queue = ProcessQueue::new(20, 4);
-    let event_loop = EventLoop::new().expect("event loop");
+struct StdinHandler {
+    connection: Stream<ConnectionMsg>,
+}
 
-    let connection = TcpConnection::ip4(&process_queue, &event_loop, "localhost", 1337, Connection::new());
-
-    std::thread::spawn(move || {
-        let stdin = stdin();
-        let stdin = stdin.lock();
-
-        for line in stdin.lines() {
-            let line = line.expect("read line");
-            println!("Sending Write");
-            connection.send_message(Write(line.into_bytes()));
+impl StdinHandler {
+    fn new(connection: Stream<ConnectionMsg>) -> Self {
+        Self {
+            connection,
         }
-    });
+    }
+}
 
-    event_loop.run().expect("run");
+impl InputNotify for StdinHandler {
+    fn received(&mut self, data: Vec<u8>) {
+        self.connection.send(Write(data));
+    }
+}
+
+fn main() {
+    let mut event_loop = Loop::new().expect("event loop");
+
+    if let Some(connection) = TcpConnection::ip4(&mut event_loop, "localhost", 1337, Connection::new()) {
+        Stdin::new(&mut event_loop, StdinHandler::new(connection)).expect("stdin");
+
+        event_loop.run().expect("run");
+    }
 }

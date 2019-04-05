@@ -12,6 +12,7 @@ use std::io::{
 use std::os::unix::io::RawFd;
 use std::ptr;
 use std::rc::Rc;
+use std::u64;
 
 use slab::{Entry, Slab};
 
@@ -94,6 +95,10 @@ pub enum EpollResult {
     Ok,
 }
 
+thread_local! {
+    static EVENT_FD: RawFd = unsafe { ffi::eventfd(0, ffi::EFD_NONBLOCK) };
+}
+
 #[derive(Clone)]
 pub struct EventLoop {
     callbacks: Rc<RefCell<Slab<Callback>>>,
@@ -107,10 +112,28 @@ impl EventLoop {
         if fd == -1 {
             return Err(Error::last_os_error());
         }
-        Ok(Self {
+        let event_loop = Self {
             callbacks: Rc::new(RefCell::new(Slab::new())),
             fd,
-        })
+        };
+
+        let event_fd = EVENT_FD.with(|&event_fd| event_fd);
+        event_loop.add_raw_fd_without_callback(event_fd, Mode::Read)?;
+
+        Ok(event_loop)
+    }
+
+    fn add_raw_fd_without_callback(&self, fd: RawFd, mode: Mode) -> io::Result<()> {
+        let mut event = ffi::epoll_event {
+            events: mode as u32,
+            data: ffi::epoll_data_t {
+                u64: u64::MAX,
+            },
+        };
+        if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub fn add_raw_fd<F>(&self, fd: RawFd, mode: Mode, callback: F) -> io::Result<()>
@@ -169,7 +192,7 @@ impl EventLoop {
         Ok(Event::new(callback_entry, self))
     }
 
-    pub fn try_add_raw_fd_oneshot(&mut self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
+    pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
         let callback_entry = self.callbacks.borrow_mut().reserve_entry();
         let mut event = ffi::epoll_event {
             events: mode as u32 | ffi::EPOLLONESHOT,
@@ -200,6 +223,16 @@ impl EventLoop {
         }
 
         for &event in event_list.iter().take(ready as usize) {
+            unsafe {
+                if event.data.u64 == u64::MAX {
+                    // No callback is associated with the eventfd used to wakeup the event loop.
+                    EVENT_FD.with(|&event_fd| {
+                        let mut value = 0u64;
+                        ffi::eventfd_read(event_fd, &mut value as *mut _)
+                    });
+                    continue;
+                }
+            }
             let entry = unsafe { Entry::from(event.data.u64 as usize) };
             let callback =
                 match self.callbacks.borrow_mut().remove(entry) {
@@ -242,6 +275,14 @@ impl EventLoop {
             }
         }
     }
+
+    pub fn wakeup() {
+        EVENT_FD.with(|&event_fd| {
+            unsafe {
+                ffi::eventfd_write(event_fd, 1);
+            }
+        });
+    }
 }
 
 pub fn event_list() -> [ffi::epoll_event; MAX_EVENTS] {
@@ -272,6 +313,7 @@ pub mod ffi {
     pub const EPOLLET: u32 = 1 << 31;
     pub const EPOLLHUP: u32 = 0x010;
     pub const EPOLLRDHUP: u32 = 0x2000;
+    pub const EFD_NONBLOCK: i32 = 0o4000;
 
    #[repr(C)]
     #[derive(Clone, Copy)]
@@ -289,9 +331,16 @@ pub mod ffi {
         pub data: epoll_data_t,
     }
 
+    #[allow(non_camel_case_types)]
+    type eventfd_t = u64;
+
     extern "C" {
         pub fn epoll_create1(flags: i32) -> i32;
         pub fn epoll_ctl(epfd: i32, op: EpollOperation, fd: i32, event: *mut epoll_event) -> i32;
         pub fn epoll_wait(epdf: i32, events: *mut epoll_event, maxevents: i32, timeout: i32) -> i32;
+
+        pub fn eventfd(initval: u32, flags: i32) -> i32;
+        pub fn eventfd_read(fd: i32, value: *mut eventfd_t) -> i32;
+        pub fn eventfd_write(fd: i32, value: eventfd_t) -> i32;
     }
 }

@@ -55,7 +55,7 @@ impl TcpConnectionNotify for Server {
 fn main() {
     let mut event_loop = Loop::new().expect("event loop");
 
-    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {});
+    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {}).expect("listen");
 
     event_loop.run().expect("run");
 }

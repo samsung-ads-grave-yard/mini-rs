@@ -2,17 +2,15 @@ extern crate mini;
 
 use std::io;
 
-use mini::actor::{
-    Pid,
-    ProcessContinuation,
-    ProcessQueue,
-    SpawnParameters,
+use mini::handler::{
+    Handler,
+    Loop,
+    Stream,
 };
-use mini::async::EventLoop;
 use mini::http::{
     DefaultHttpHandler,
     Http,
-    HttpHandler,
+    HttpHandlerIgnoreErr,
 };
 
 use self::Msg::*;
@@ -23,62 +21,33 @@ enum Msg {
     HttpError(io::Error),
 }
 
-struct Handler {
-    actor: Pid<Msg>,
+struct HttpHandler {
 }
 
-impl Handler {
-    fn new(actor: &Pid<Msg>) -> Self {
-        Self {
-            actor: actor.clone(),
+impl Handler for HttpHandler {
+    type Msg = Msg;
+
+    fn update(&mut self, _event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Self::Msg) {
+        match msg {
+            HttpGet(body) => {
+                println!("{}", String::from_utf8_lossy(&body));
+            },
+            HttpError(error) => {
+                eprintln!("Error: {}", error);
+            },
         }
-    }
-}
-
-impl HttpHandler for Handler {
-    fn response(&mut self, data: Vec<u8>) {
-        self.actor.send_message(HttpGet(data)).expect("send message");
-    }
-
-    fn error(&mut self, error: io::Error) {
-        self.actor.send_message(HttpError(error)).expect("send message");
     }
 }
 
 fn main() {
-    let process_queue = ProcessQueue::new(10, 2);
+    let mut event_loop = Loop::new().expect("event loop");
 
-    let actor_handler = move |_current: &Pid<_>, msg: Option<Msg>| {
-        match msg {
-            Some(msg) =>
-                match msg {
-                    HttpGet(body) => {
-                        println!("{}", String::from_utf8_lossy(&body));
-                        ProcessContinuation::WaitMessage
-                    },
-                    HttpError(error) => {
-                        eprintln!("Error: {}", error);
-                        ProcessContinuation::WaitMessage
-                    },
-                },
-            None => {
-                ProcessContinuation::WaitMessage
-            },
-        }
-    };
-
-    let pid = process_queue.blocking_spawn(SpawnParameters {
-        handler: actor_handler.clone(),
-        message_capacity: 5,
-        max_message_per_cycle: 1,
-    });
+    let stream = event_loop.spawn(HttpHandler {});
 
     let http = Http::new();
 
-    let event_loop = EventLoop::new().expect("event loop");
-
-    http.get("ww.redbook.io", Handler::new(&pid), &event_loop);
-    http.get("www.redbook.io", DefaultHttpHandler::new(&pid, HttpGet), &event_loop);
+    http.get("ww.redbook.io", &mut event_loop, DefaultHttpHandler::new(&stream, HttpGet, HttpError));
+    http.get("www.redbook.io", &mut event_loop, HttpHandlerIgnoreErr::new(&stream, HttpGet));
 
     event_loop.run().expect("run");
 }

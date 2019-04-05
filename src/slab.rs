@@ -22,7 +22,7 @@ enum Node<T> {
 }
 
 impl<T> Node<T> {
-    fn as_mut_option(&mut self) -> Option<&mut T> {
+    /*fn as_mut_option(&mut self) -> Option<&mut T> {
         match self {
             Empty | Reserved => None,
             Occupied(ref mut value) => Some(value),
@@ -34,7 +34,7 @@ impl<T> Node<T> {
             Empty | Reserved => None,
             Occupied(ref value) => Some(value),
         }
-    }
+    }*/
 
     fn into_option(self) -> Option<T> {
         match self {
@@ -59,13 +59,13 @@ impl<T> Slab<T> {
         self.elements.len()
     }
 
-    pub fn get(&self, Entry(index): Entry) -> Option<&T> {
+    /*pub fn get(&self, Entry(index): Entry) -> Option<&T> {
         self.elements[index].as_option()
     }
 
     pub fn get_mut(&mut self, Entry(index): Entry) -> Option<&mut T> {
         self.elements[index].as_mut_option()
-    }
+    }*/
 
     pub fn insert(&mut self, value: T) -> Entry {
         let entry = self.reserve_entry();

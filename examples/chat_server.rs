@@ -2,11 +2,11 @@ extern crate mini;
 
 use std::net::TcpListener;
 
-use mini::actor::{
-    ProcessQueue,
-    SpawnParameters,
+use mini::handler::{
+    Handler,
+    Loop,
+    Stream,
 };
-use mini::async::EventLoop;
 use mini::net::{
     TcpConnection,
     TcpConnectionNotify,
@@ -14,7 +14,56 @@ use mini::net::{
 };
 use mini::net::TcpListener as ActorTcpListener;
 
+use self::Msg::*;
+
+enum Msg {
+    Accepted(TcpConnection),
+    Received(Vec<u8>),
+    Closed(TcpConnection),
+}
+
+struct ChatHandler {
+    clients: Vec<TcpConnection>,
+}
+
+impl ChatHandler {
+    fn new() -> Self {
+        Self {
+            clients: vec![],
+        }
+    }
+}
+
+impl Handler for ChatHandler {
+    type Msg = Msg;
+
+    fn update(&mut self, _event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Self::Msg) {
+        match msg {
+            Accepted(tcp_connection) => self.clients.push(tcp_connection),
+            Received(data) => {
+                for client in &self.clients {
+                    if let Err(error) = client.write(data.clone()) {
+                        eprintln!("Error send message: {}", error);
+                    }
+                }
+            },
+            Closed(tcp_connection) => {
+                // TODO: remove from self.clients.
+            },
+        }
+    }
+}
+
 struct Listener {
+    stream: Stream<Msg>,
+}
+
+impl Listener {
+    fn new(event_loop: &mut Loop) -> Self {
+        Self {
+            stream: event_loop.spawn(ChatHandler::new()),
+        }
+    }
 }
 
 impl TcpListenNotify for Listener {
@@ -32,50 +81,41 @@ impl TcpListenNotify for Listener {
     }
 
     fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify> {
-        Box::new(Server::new())
+        Box::new(Server::new(&self.stream))
     }
 }
 
 struct Server {
-    clients: Vec<TcpConnection>,
+    stream: Stream<Msg>,
 }
 
 impl Server {
-    fn new() -> Self {
+    fn new(stream: &Stream<Msg>) -> Self {
         Self {
-            clients: vec![],
+            stream: stream.clone(),
         }
     }
 }
 
 impl TcpConnectionNotify for Server {
     fn accepted(&mut self, connection: &mut TcpConnection) {
-        println!("Accepted");
-        self.clients.push(connection.clone());
+        self.stream.send(Accepted(connection.clone()));
     }
 
     fn received(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) {
-        println!("Received {}", String::from_utf8_lossy(&data));
-        for client in &self.clients {
-            if let Err(error) = client.write(data.clone()) {
-                eprintln!("Error send message: {}", error);
-            }
-        }
+        self.stream.send(Received(data));
     }
 
-    fn closed(&mut self, _connection: &mut TcpConnection) {
+    fn closed(&mut self, connection: &mut TcpConnection) {
+        self.stream.send(Closed(connection.clone()));
     }
 }
 
 fn main() {
-    let process_queue = ProcessQueue::new(20, 4);
-    let event_loop = EventLoop::new().expect("event loop");
+    let mut event_loop = Loop::new().expect("event loop");
 
-    process_queue.blocking_spawn(SpawnParameters {
-        handler: ActorTcpListener::ip4(&event_loop, "127.0.0.1:1337", Listener {}).expect("ip4 listener"),
-        message_capacity: 20,
-        max_message_per_cycle: 10,
-    });
+    let listener = Listener::new(&mut event_loop);
+    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", listener).expect("ip4 listener");
 
     event_loop.run().expect("event loop run");
 }

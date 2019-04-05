@@ -1,5 +1,6 @@
 extern crate mini;
 
+use std::os::unix::io::AsRawFd;
 use std::net::TcpListener;
 
 use mini::handler::{
@@ -48,7 +49,7 @@ impl Handler for ChatHandler {
                 }
             },
             Closed(tcp_connection) => {
-                // TODO: remove from self.clients.
+                self.clients.retain(|client| client.as_raw_fd() != tcp_connection.as_raw_fd());
             },
         }
     }

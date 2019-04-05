@@ -73,6 +73,7 @@ impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
 pub struct Loop {
     event_loop: EventLoop,
     handlers: Slab<Box<Callable>>,
+    stopped: bool,
 }
 
 impl Loop {
@@ -80,6 +81,7 @@ impl Loop {
         Ok(Self {
             event_loop: EventLoop::new()?,
             handlers: Slab::new(),
+            stopped: false,
         })
     }
 
@@ -136,7 +138,7 @@ impl Loop {
     pub fn run(&mut self) -> io::Result<()> {
         let mut event_list = event_list();
 
-        loop {
+        while !self.stopped {
             match self.iterate(&mut event_list) {
                 // Restart if interrupted by signal.
                 EpollResult::Interrupted => continue,
@@ -144,6 +146,13 @@ impl Loop {
                 EpollResult::Ok => (),
             }
         }
+
+        Ok(())
+    }
+
+    pub fn stop(&mut self) {
+        self.stopped = true;
+        EventLoop::wakeup();
     }
 
     pub fn try_add_fd<A: AsRawFd>(&self, as_fd: &A, mode: Mode) -> io::Result<Event> {

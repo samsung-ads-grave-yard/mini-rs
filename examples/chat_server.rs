@@ -38,7 +38,7 @@ impl ChatHandler {
 impl Handler for ChatHandler {
     type Msg = Msg;
 
-    fn update(&mut self, _event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Self::Msg) {
+    fn update(&mut self, event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Self::Msg) {
         match msg {
             Accepted(tcp_connection) => self.clients.push(tcp_connection),
             Received(data) => {
@@ -46,6 +46,9 @@ impl Handler for ChatHandler {
                     if let Err(error) = client.write(data.clone()) {
                         eprintln!("Error send message: {}", error);
                     }
+                }
+                if data == b"/quit\n" {
+                    event_loop.stop();
                 }
             },
             Closed(tcp_connection) => {

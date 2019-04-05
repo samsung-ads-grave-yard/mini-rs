@@ -103,6 +103,7 @@ thread_local! {
 pub struct EventLoop {
     callbacks: Rc<RefCell<Slab<Callback>>>,
     fd: RawFd,
+    stopped: bool,
 }
 
 impl EventLoop {
@@ -115,6 +116,7 @@ impl EventLoop {
         let event_loop = Self {
             callbacks: Rc::new(RefCell::new(Slab::new())),
             fd,
+            stopped: false,
         };
 
         let event_fd = EVENT_FD.with(|&event_fd| event_fd);
@@ -210,7 +212,6 @@ impl EventLoop {
     pub fn iterate(&self, event_list: &mut [ffi::epoll_event]) -> EpollResult {
         let epoll_fd = self.fd;
 
-        // TODO: check if epoll_wait() can be called from multiple threads.
         let ready = unsafe { ffi::epoll_wait(epoll_fd, event_list.as_mut_ptr(), event_list.len() as i32, -1) };
         if ready == -1 {
             let last_error = Error::last_os_error();
@@ -266,7 +267,7 @@ impl EventLoop {
     pub fn run(&self) -> io::Result<()> {
         let mut event_list = event_list();
 
-        loop {
+        while !self.stopped {
             match self.iterate(&mut event_list) {
                 // Restart if interrupted by signal.
                 EpollResult::Interrupted => continue,
@@ -274,6 +275,13 @@ impl EventLoop {
                 EpollResult::Ok => (),
             }
         }
+
+        Ok(())
+    }
+
+    pub fn stop(&mut self) {
+        self.stopped = true;
+        EventLoop::wakeup();
     }
 
     pub fn wakeup() {

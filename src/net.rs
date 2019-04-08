@@ -459,6 +459,7 @@ impl TcpConnection {
         let mut stream = self.connection.borrow().stream.try_clone()?;
         let mut index = 0;
         loop {
+            // TODO: yield to avoid starvation?
             match stream.write(&buffer[index..]) {
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     self.connection.borrow_mut().buffers.push_back(Buffer::new(buffer, index));
@@ -685,23 +686,25 @@ where L: TcpListenNotify,
                     // TODO: remove this handler.
                 }
                 else if event.events & Mode::Read as u32 != 0 {
-                    match self.tcp_listener.accept() {
-                        Ok((stream, _addr)) => {
-                            match stream.set_nonblocking(true) {
-                                Ok(()) => {
-                                    let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
-                                    let mut connection = TcpConnection::new(stream);
-                                    connection_notify.accepted(&mut connection);
-                                    // TODO: possibly more efficient to spawn an actor to manage the
-                                    // connection in another thread.
-                                    manage_connection(event_loop, connection, connection_notify, None);
-                                },
-                                Err(error) => self.listen_notify.error(error),
-                            }
-                        },
-                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                        },
-                        Err(error) => self.listen_notify.error(error),
+                    loop {
+                        // TODO: yield to avoid starvation?
+                        match self.tcp_listener.accept() {
+                            Ok((stream, _addr)) => {
+                                match stream.set_nonblocking(true) {
+                                    Ok(()) => {
+                                        let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
+                                        let mut connection = TcpConnection::new(stream);
+                                        connection_notify.accepted(&mut connection);
+                                        // TODO: possibly more efficient to spawn an actor to manage the
+                                        // connection in another thread.
+                                        manage_connection(event_loop, connection, connection_notify, None);
+                                    },
+                                    Err(error) => self.listen_notify.error(error),
+                                }
+                            },
+                            Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
+                            Err(error) => self.listen_notify.error(error),
+                        }
                     }
                 }
                 // TODO: call listen_notify.closed().

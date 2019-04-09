@@ -16,16 +16,16 @@ use std::u64;
 
 use slab::{Entry, Slab};
 
-const MAX_EVENTS: usize = 100;
+const MAX_EVENTS: usize = 100; // TODO: tweak this value.
 
 #[repr(u32)]
 pub enum Mode {
     Error = ffi::EPOLLERR,
     HangupError = ffi::EPOLLHUP,
-    Read = ffi::EPOLLIN | ffi::EPOLLET | ffi::EPOLLRDHUP,
-    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
+    Read = ffi::EPOLLIN | ffi::EPOLLRDHUP,
+    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLRDHUP,
     ShutDown = ffi::EPOLLRDHUP,
-    Write = ffi::EPOLLOUT | ffi::EPOLLET | ffi::EPOLLRDHUP,
+    Write = ffi::EPOLLOUT | ffi::EPOLLRDHUP,
 }
 
 trait FnBox {
@@ -318,7 +318,6 @@ pub mod ffi {
     pub const EPOLLOUT: u32 = 0x004;
     pub const EPOLLERR: u32 = 0x008;
     pub const EPOLLONESHOT: u32 = 1 << 30;
-    pub const EPOLLET: u32 = 1 << 31;
     pub const EPOLLHUP: u32 = 0x010;
     pub const EPOLLRDHUP: u32 = 0x2000;
     pub const EFD_NONBLOCK: i32 = 0o4000;

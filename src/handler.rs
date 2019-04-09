@@ -50,7 +50,7 @@ impl<MSG> Stream<MSG> {
 pub trait Handler {
     type Msg;
 
-    fn update(&mut self, handler_loop: &mut Loop, stream: &Stream<Self::Msg>, msg: Self::Msg);
+    fn update(&mut self, event_loop: &mut Loop, stream: &Stream<Self::Msg>, msg: Self::Msg);
 }
 
 struct Component<HANDLER: Handler<Msg=MSG>, MSG> {
@@ -59,13 +59,13 @@ struct Component<HANDLER: Handler<Msg=MSG>, MSG> {
 }
 
 trait Callable {
-    fn process(&mut self, handler_loop: &mut Loop); // TODO: should probably return the handler to spawn.
+    fn process(&mut self, event_loop: &mut Loop);
 }
 
 impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
-    fn process(&mut self, handler_loop: &mut Loop) {
+    fn process(&mut self, event_loop: &mut Loop) {
         while let Some(msg) = self.stream.pop() {
-            self.handler.update(handler_loop, &self.stream, msg);
+            self.handler.update(event_loop, &self.stream, msg);
         }
     }
 }

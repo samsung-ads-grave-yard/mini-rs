@@ -46,25 +46,17 @@ where NOTIFY: InputNotify,
         match msg {
             Read(event) => {
                 if event.events & Mode::Read as u32 != 0 {
-                    loop {
-                        // Loop to read everything because the edge-triggered mode is
-                        // used and it only notifies once per readiness.
-                        // TODO: Might want to reschedule the read to avoid starvation
-                        // of other sockets.
-                        let mut buffer = vec![0; 4096];
-                        match self.stdin.read(&mut buffer) {
-                            Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
-                                error.kind() == ErrorKind::Interrupted => break,
-                            Ok(bytes_read) => {
-                                if bytes_read == 0 {
-                                    // The connection has been shut down.
-                                    break;
-                                }
+                    let mut buffer = vec![0; 4096];
+                    match self.stdin.read(&mut buffer) {
+                        Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                            error.kind() == ErrorKind::Interrupted => (),
+                        Ok(bytes_read) => {
+                            if bytes_read > 0 {
                                 buffer.truncate(bytes_read);
                                 self.input_notify.received(buffer);
-                            },
-                            _ => (),
-                        }
+                            }
+                        },
+                        _ => (),
                     }
                 }
             },

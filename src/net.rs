@@ -170,7 +170,7 @@ pub mod tcp {
                                     connection_notify.error(error);
                                 }
                                 manage_connection(event_loop, connection, Box::new(connection_notify), Some(&self.connection_stream));
-                                // TODO: stop actor here.
+                                // TODO: stop handler here.
                             },
                             Err(_) => {
                                 let _ = close(fd);
@@ -387,27 +387,21 @@ struct _TcpConnection {
 impl _TcpConnection {
     fn send(&mut self, connection_notify: &mut TcpConnectionNotify) {
         let mut remove_buffer = false;
-        // TODO: yield sometimes to avoid starvation?
-        loop {
-            if let Some(ref mut first_buffer) = self.buffers.front_mut() {
-                match self.stream.write(first_buffer.slice()) {
-                    Ok(written) => {
-                        first_buffer.advance(written);
-                        if first_buffer.exhausted() {
-                            remove_buffer = true;
-                        }
-                    },
-                    Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                    Err(error) => connection_notify.error(error),
-                }
+        if let Some(ref mut first_buffer) = self.buffers.front_mut() {
+            match self.stream.write(first_buffer.slice()) {
+                Ok(written) => {
+                    first_buffer.advance(written);
+                    if first_buffer.exhausted() {
+                        remove_buffer = true;
+                    }
+                },
+                Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
+                Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+                Err(error) => connection_notify.error(error),
             }
-            else {
-                break;
-            }
-            if remove_buffer {
-                self.buffers.pop_front();
-            }
+        }
+        if remove_buffer {
+            self.buffers.pop_front();
         }
     }
 }
@@ -458,7 +452,7 @@ impl TcpConnection {
         let buffer_size = buffer.len();
         let mut stream = self.connection.borrow().stream.try_clone()?;
         let mut index = 0;
-        loop {
+        while index < buffer.len() {
             // TODO: yield to avoid starvation?
             match stream.write(&buffer[index..]) {
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
@@ -474,6 +468,7 @@ impl TcpConnection {
                 },
             }
         }
+        Ok(())
     }
 }
 
@@ -515,26 +510,18 @@ impl Handler for ConnectionComponent {
                     // TODO: stop.
                 }
                 if event.events & Mode::Read as u32 != 0 {
-                    loop {
-                        // Loop to read everything because the edge-triggered mode is
-                        // used and it only notifies once per readiness.
-                        // TODO: Might want to reschedule the read to avoid starvation
-                        // of other sockets.
-                        let mut buffer = vec![0; 4096];
-                        match self.connection.read(&mut buffer) {
-                            Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
-                                error.kind() == ErrorKind::Interrupted => break,
-                            Ok(bytes_read) => {
-                                if bytes_read == 0 {
-                                    // The connection has been shut down.
-                                    break;
-                                }
+                    let mut buffer = vec![0; 4096];
+                    match self.connection.read(&mut buffer) {
+                        Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
+                            error.kind() == ErrorKind::Interrupted => (),
+                        Ok(bytes_read) => {
+                            if bytes_read > 0 {
                                 buffer.truncate(bytes_read);
                                 self.connection_notify.received(&mut self.connection, buffer);
                                 disposed = disposed || self.connection.disposed();
-                            },
-                            _ => (),
-                        }
+                            }
+                        },
+                        _ => (),
                     }
                 }
                 if event.events & Mode::Write as u32 != 0 {
@@ -686,25 +673,21 @@ where L: TcpListenNotify,
                     // TODO: remove this handler.
                 }
                 else if event.events & Mode::Read as u32 != 0 {
-                    loop {
-                        // TODO: yield to avoid starvation?
-                        match self.tcp_listener.accept() {
-                            Ok((stream, _addr)) => {
-                                match stream.set_nonblocking(true) {
-                                    Ok(()) => {
-                                        let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
-                                        let mut connection = TcpConnection::new(stream);
-                                        connection_notify.accepted(&mut connection);
-                                        // TODO: possibly more efficient to spawn an actor to manage the
-                                        // connection in another thread.
-                                        manage_connection(event_loop, connection, connection_notify, None);
-                                    },
-                                    Err(error) => self.listen_notify.error(error),
-                                }
-                            },
-                            Err(ref error) if error.kind() == ErrorKind::WouldBlock => break,
-                            Err(error) => self.listen_notify.error(error),
-                        }
+                    // TODO: accept many times?
+                    match self.tcp_listener.accept() {
+                        Ok((stream, _addr)) => {
+                            match stream.set_nonblocking(true) {
+                                Ok(()) => {
+                                    let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
+                                    let mut connection = TcpConnection::new(stream);
+                                    connection_notify.accepted(&mut connection);
+                                    manage_connection(event_loop, connection, connection_notify, None);
+                                },
+                                Err(error) => self.listen_notify.error(error),
+                            }
+                        },
+                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
+                        Err(error) => self.listen_notify.error(error),
                     }
                 }
                 // TODO: call listen_notify.closed().

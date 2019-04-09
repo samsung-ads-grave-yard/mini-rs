@@ -1,7 +1,7 @@
 extern crate mini;
 
 use std::os::unix::io::AsRawFd;
-use std::net::TcpListener;
+use std::net;
 
 use mini::handler::{
     Handler,
@@ -13,7 +13,7 @@ use mini::net::{
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::net::TcpListener as ActorTcpListener;
+use mini::net::TcpListener;
 
 use self::Msg::*;
 
@@ -71,7 +71,7 @@ impl Listener {
 }
 
 impl TcpListenNotify for Listener {
-    fn listening(&mut self, listener: &TcpListener) {
+    fn listening(&mut self, listener: &net::TcpListener) {
         match listener.local_addr() {
             Ok(address) =>
                 println!("Listening on {}:{}.", address.ip(), address.port()),
@@ -84,7 +84,7 @@ impl TcpListenNotify for Listener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
         Box::new(Server::new(&self.stream))
     }
 }
@@ -119,7 +119,7 @@ fn main() {
     let mut event_loop = Loop::new().expect("event loop");
 
     let listener = Listener::new(&mut event_loop);
-    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", listener).expect("ip4 listener");
+    TcpListener::ip4(&mut event_loop, "127.0.0.1:1337", listener).expect("ip4 listener");
 
     event_loop.run().expect("event loop run");
 }

@@ -1,6 +1,17 @@
+/* Benchmark:
+Running 30s test @ http://127.0.0.1:1337/
+  12 threads and 400 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     4.66ms   10.96ms 501.55ms   99.62%
+    Req/Sec     7.95k     1.22k   32.02k    94.89%
+  2836087 requests in 30.04s, 262.36MB read
+Requests/sec:  94408.47
+Transfer/sec:      8.73MB
+ */
+
 extern crate mini;
 
-use std::net::TcpListener;
+use std::net;
 
 use mini::handler::Loop;
 use mini::net::{
@@ -8,13 +19,13 @@ use mini::net::{
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::net::TcpListener as ActorTcpListener;
+use mini::net::TcpListener;
 
 struct Listener {
 }
 
 impl TcpListenNotify for Listener {
-    fn listening(&mut self, listener: &TcpListener) {
+    fn listening(&mut self, listener: &net::TcpListener) {
         match listener.local_addr() {
             Ok(address) =>
                 println!("Listening on {}:{}.", address.ip(), address.port()),
@@ -27,7 +38,7 @@ impl TcpListenNotify for Listener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
         Box::new(Server {})
     }
 }
@@ -62,7 +73,7 @@ impl TcpConnectionNotify for Server {
 fn main() {
     let mut event_loop = Loop::new().expect("event loop");
 
-    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {}).expect("listen");
+    TcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {}).expect("listen");
 
     event_loop.run().expect("event loop run");
 }

@@ -1,7 +1,7 @@
 extern crate mini;
 
 use std::io::Write;
-use std::net::TcpListener;
+use std::net;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -16,13 +16,13 @@ use mini::net::{
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::net::TcpListener as ActorTcpListener;
+use mini::net::TcpListener;
 
 struct Listener {
 }
 
 impl TcpListenNotify for Listener {
-    fn listening(&mut self, listener: &TcpListener) {
+    fn listening(&mut self, listener: &net::TcpListener) {
         match listener.local_addr() {
             Ok(address) =>
                 println!("Listening on {}:{}.", address.ip(), address.port()),
@@ -35,7 +35,7 @@ impl TcpListenNotify for Listener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
         Box::new(Server {})
     }
 }
@@ -63,7 +63,7 @@ impl TcpConnectionNotify for Server {
 fn test_blocked_write() {
     let mut event_loop = Loop::new().expect("event loop");
 
-    ActorTcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {}).expect("listen");
+    TcpListener::ip4(&mut event_loop, "127.0.0.1:1337", Listener {}).expect("listen");
 
     let done = Arc::new(AtomicBool::new(false));
 

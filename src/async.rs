@@ -9,7 +9,7 @@ use std::io::{
     Error,
     ErrorKind,
 };
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
 use std::rc::Rc;
 use std::u64;
@@ -20,12 +20,9 @@ const MAX_EVENTS: usize = 100; // TODO: tweak this value.
 
 #[repr(u32)]
 pub enum Mode {
-    Error = ffi::EPOLLERR,
-    HangupError = ffi::EPOLLHUP,
-    Read = ffi::EPOLLIN | ffi::EPOLLRDHUP,
-    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLRDHUP,
-    ShutDown = ffi::EPOLLRDHUP,
-    Write = ffi::EPOLLOUT | ffi::EPOLLRDHUP,
+    Read = ffi::EPOLLIN | ffi::EPOLLEXCLUSIVE,
+    ReadWrite = ffi::EPOLLIN | ffi::EPOLLOUT | ffi::EPOLLEXCLUSIVE,
+    Write = ffi::EPOLLOUT | ffi::EPOLLEXCLUSIVE,
 }
 
 trait FnBox {
@@ -108,7 +105,6 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new() -> io::Result<Self> {
-        // TODO: use EPOLL_EXCLUSIVE to allow using from multiple threads.
         let fd = unsafe { ffi::epoll_create1(0) };
         if fd == -1 {
             return Err(Error::last_os_error());
@@ -170,6 +166,10 @@ impl EventLoop {
             return Err(Error::last_os_error());
         }
         Ok(())
+    }
+
+    pub fn remove_fd<A: AsRawFd>(&self, as_fd: &A) -> io::Result<()> {
+        self.remove_raw_fd(as_fd.as_raw_fd())
     }
 
     pub fn remove_raw_fd(&self, fd: RawFd) -> io::Result<()> {
@@ -285,6 +285,7 @@ impl EventLoop {
     }
 
     pub fn wakeup() {
+        // TODO: only wake up if currently blocking?
         EVENT_FD.with(|&event_fd| {
             unsafe {
                 ffi::eventfd_write(event_fd, 1);
@@ -319,8 +320,8 @@ pub mod ffi {
     pub const EPOLLERR: u32 = 0x008;
     pub const EPOLLONESHOT: u32 = 1 << 30;
     pub const EPOLLHUP: u32 = 0x010;
-    pub const EPOLLRDHUP: u32 = 0x2000;
     pub const EFD_NONBLOCK: i32 = 0o4000;
+    pub const EPOLLEXCLUSIVE: u32 = 1 << 28;
 
    #[repr(C)]
     #[derive(Clone, Copy)]

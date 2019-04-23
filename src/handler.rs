@@ -131,6 +131,10 @@ impl Loop {
         self.event_loop.iterate(event_list)
     }
 
+    pub fn remove_fd<A: AsRawFd>(&self, as_fd: &A) -> io::Result<()> {
+        self.event_loop.remove_fd(as_fd)
+    }
+
     pub fn remove_raw_fd(&self, fd: RawFd) -> io::Result<()> {
         self.event_loop.remove_raw_fd(fd)
     }

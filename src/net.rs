@@ -17,7 +17,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::str;
 
-use async::Mode;
+use async::{self, Mode};
 use async::ffi::epoll_event;
 use handler::{
     Loop,
@@ -26,6 +26,12 @@ use handler::{
 };
 
 use self::ListenerMsg::*;
+
+#[repr(u32)]
+enum StatusMode {
+    Error = async::ffi::EPOLLERR,
+    HangupError = async::ffi::EPOLLHUP,
+}
 
 /*fn get_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<bool> {
     let val = unsafe { ffi::fcntl(socket.as_raw_fd(), ffi::F_GETFL, 0) };
@@ -68,6 +74,7 @@ pub mod tcp {
         AddrInfoIter,
         ConnectionComponentMsg,
         ConnectionMsg,
+        StatusMode,
         TcpConnection,
         TcpConnectionNotify,
         close,
@@ -153,7 +160,7 @@ pub mod tcp {
                 },
                 WriteEvent(event, connection, mut connection_notify, address_infos, count) => {
                     let fd = connection.as_raw_fd();
-                    if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                    if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                         stream.send(TryingConnectionToHost(connection_notify, address_infos, count + 1));
                     }
                     // TODO: should we check for Write when there's an error?
@@ -385,7 +392,7 @@ struct _TcpConnection {
 }
 
 impl _TcpConnection {
-    fn send(&mut self, connection_notify: &mut TcpConnectionNotify) {
+    fn send(&mut self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
         let mut remove_buffer = false;
         if let Some(ref mut first_buffer) = self.buffers.front_mut() {
             match self.stream.write(first_buffer.slice()) {
@@ -397,7 +404,11 @@ impl _TcpConnection {
                 },
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
                 Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                Err(error) => connection_notify.error(error),
+                Err(error) => {
+                    connection_notify.error(error);
+                    let _ = event_loop.remove_fd(&self.stream);
+                    // TODO: remove the handler as well.
+                },
             }
         }
         if remove_buffer {
@@ -443,9 +454,9 @@ impl TcpConnection {
         self.connection.borrow_mut().stream.read(buffer)
     }
 
-    fn send(&self, connection_notify: &mut TcpConnectionNotify) {
+    fn send(&self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
         let mut connection = self.connection.borrow_mut();
-        connection.send(connection_notify);
+        connection.send(event_loop, connection_notify);
     }
 
     pub fn write(&self, buffer: Vec<u8>) -> io::Result<()> {
@@ -499,14 +510,14 @@ impl Handler for ConnectionComponent {
         match msg {
             ConnectionComponentMsg::ReadWrite(event) => {
                 let mut disposed = false;
-                if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     // TODO: are we sure we want to remove the fd from epoll when there's an error?
                     if let Err(error) = event_loop.remove_raw_fd(self.connection.as_raw_fd()) {
                         // TODO: not sure if it makes sense to report this error to the user.
                         self.connection_notify.error(error);
                     }
-                    self.connection_notify.closed(&mut self.connection); // FIXME: should it only be called for HangupError and ShutDown?
+                    self.connection_notify.closed(&mut self.connection); // FIXME: should it only be called for HangupError?
                     // TODO: stop.
                 }
                 if event.events & Mode::Read as u32 != 0 {
@@ -520,12 +531,19 @@ impl Handler for ConnectionComponent {
                                 self.connection_notify.received(&mut self.connection, buffer);
                                 disposed = disposed || self.connection.disposed();
                             }
+                            else {
+                                let _ = event_loop.remove_fd(&self.connection);
+                                // TODO: remove the handler as well.
+                            }
                         },
-                        _ => (),
+                        Err(_) => {
+                            let _ = event_loop.remove_fd(&self.connection);
+                            // TODO: remove the handler as well.
+                        },
                     }
                 }
                 if event.events & Mode::Write as u32 != 0 {
-                    self.connection.send(&mut *self.connection_notify);
+                    self.connection.send(event_loop, &mut *self.connection_notify);
                 }
                 if disposed {
                     self.connection_notify.closed(&mut self.connection);
@@ -535,6 +553,8 @@ impl Handler for ConnectionComponent {
             ConnectionComponentMsg::Write(data) =>
                 if let Err(error) = self.connection.write(data) {
                     self.connection_notify.error(error);
+                    let _ = event_loop.remove_fd(&self.connection);
+                    // TODO: remove the handler as well.
                 },
         }
     }
@@ -624,7 +644,7 @@ pub struct TcpListener<L> {
 }
 
 impl<L> TcpListener<L> {
-    fn new(tcp_listener: net::TcpListener, listen_notify: L) -> Self {
+    pub fn new(tcp_listener: net::TcpListener, listen_notify: L) -> Self {
         Self {
             listen_notify,
             tcp_listener,
@@ -662,14 +682,14 @@ where L: TcpListenNotify,
     fn update(&mut self, event_loop: &mut Loop, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
         match msg {
             ReadEvent(event) => {
-                if (event.events & (Mode::HangupError as u32 | Mode::ShutDown as u32 | Mode::Error as u32)) != 0 {
+                if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     // TODO: are we sure we want to remove the fd from epoll when there's an error?
                     if let Err(error) = event_loop.remove_raw_fd(self.tcp_listener.as_raw_fd()) { // TODO: do a version of this method that takes a AsRawFd.
                         // TODO: not sure if it makes sense to report this error to the user.
                         self.listen_notify.error(error);
                     }
-                    self.listen_notify.closed(&&self.tcp_listener); // FIXME: should it only be called for HangupError and ShutDown?
+                    self.listen_notify.closed(&&self.tcp_listener); // FIXME: should it only be called for HangupError?
                     // TODO: remove this handler.
                 }
                 else if event.events & Mode::Read as u32 != 0 {

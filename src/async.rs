@@ -156,7 +156,7 @@ impl EventLoop {
     {
         let callback_entry = self.callbacks.borrow_mut().insert(Callback::Oneshot(Box::new(callback)));
         let mut event = ffi::epoll_event {
-            events: mode as u32 | ffi::EPOLLONESHOT,
+            events: mode as u32 & !ffi::EPOLLEXCLUSIVE | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
                 u64: callback_entry.index() as u64,
             },
@@ -197,7 +197,7 @@ impl EventLoop {
     pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
         let callback_entry = self.callbacks.borrow_mut().reserve_entry();
         let mut event = ffi::epoll_event {
-            events: mode as u32 | ffi::EPOLLONESHOT,
+            events: mode as u32 & !ffi::EPOLLEXCLUSIVE | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
                 u64: callback_entry.index() as u64,
             },

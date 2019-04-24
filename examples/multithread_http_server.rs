@@ -135,7 +135,8 @@ fn main() {
             let mut event_loop = Loop::new().expect("event loop");
 
             let tcp_listener = unsafe { net::TcpListener::from_raw_fd(fd) };
-            let stream = event_loop.spawn(TcpListener::new(tcp_listener, Listener::new()));
+            let listener = TcpListener::new(tcp_listener, Listener::new(), &event_loop);
+            let stream = event_loop.spawn(listener);
             event_loop.add_raw_fd(fd, Mode::Read, &stream, ReadEvent).expect("add raw fd");
 
             event_loop.run().expect("event loop run");

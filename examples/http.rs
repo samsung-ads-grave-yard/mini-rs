@@ -27,7 +27,7 @@ struct HttpHandler {
 impl Handler for HttpHandler {
     type Msg = Msg;
 
-    fn update(&mut self, _event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Self::Msg) {
+    fn update(&mut self, _stream: &Stream<Msg>, msg: Self::Msg) {
         match msg {
             HttpGet(body) => {
                 println!("{}", String::from_utf8_lossy(&body));

@@ -25,12 +25,14 @@ enum Msg {
 
 struct ChatHandler {
     clients: Vec<TcpConnection>,
+    event_loop: Loop,
 }
 
 impl ChatHandler {
-    fn new() -> Self {
+    fn new(event_loop: &Loop) -> Self {
         Self {
             clients: vec![],
+            event_loop: event_loop.clone(),
         }
     }
 }
@@ -38,7 +40,7 @@ impl ChatHandler {
 impl Handler for ChatHandler {
     type Msg = Msg;
 
-    fn update(&mut self, event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Self::Msg) {
+    fn update(&mut self, _stream: &Stream<Msg>, msg: Self::Msg) {
         match msg {
             Accepted(tcp_connection) => self.clients.push(tcp_connection),
             Received(data) => {
@@ -48,7 +50,7 @@ impl Handler for ChatHandler {
                     }
                 }
                 if data == b"/quit\n" {
-                    event_loop.stop();
+                    self.event_loop.stop();
                 }
             },
             Closed(tcp_connection) => {
@@ -64,8 +66,9 @@ struct Listener {
 
 impl Listener {
     fn new(event_loop: &mut Loop) -> Self {
+        let handler = ChatHandler::new(event_loop);
         Self {
-            stream: event_loop.spawn(ChatHandler::new()),
+            stream: event_loop.spawn(handler),
         }
     }
 }

@@ -93,13 +93,15 @@ pub mod tcp {
 
     struct Connector<NOTIFY> {
         connection_stream: Stream<ConnectionMsg>,
+        event_loop: Loop,
         _phantom: PhantomData<NOTIFY>,
     }
 
     impl<NOTIFY> Connector<NOTIFY> {
-        fn new(connection_stream: &Stream<ConnectionMsg>) -> Self {
+        fn new(connection_stream: &Stream<ConnectionMsg>, event_loop: &Loop) -> Self {
             Self {
                 connection_stream: connection_stream.clone(),
+                event_loop: event_loop.clone(),
                 _phantom: PhantomData,
             }
         }
@@ -110,7 +112,7 @@ pub mod tcp {
     {
         type Msg = Msg<NOTIFY>;
 
-        fn update(&mut self, event_loop: &mut Loop, stream: &Stream<Msg<NOTIFY>>, msg: Msg<NOTIFY>) {
+        fn update(&mut self, stream: &Stream<Msg<NOTIFY>>, msg: Msg<NOTIFY>) {
             match msg {
                 TryingConnectionToHost(mut connection_notify, mut address_infos, count) => {
                     match address_infos.next() {
@@ -124,12 +126,12 @@ pub mod tcp {
                                     connection_notify.connecting(&mut connection, count);
                                     match unsafe { connect(fd, address_info.ai_addr, address_info.ai_addrlen) } {
                                         Ok(()) => {
-                                            manage_connection(event_loop, connection, Box::new(connection_notify),
+                                            manage_connection(&mut self.event_loop, connection, Box::new(connection_notify),
                                                 Some(&self.connection_stream));
                                             //return ProcessContinuation::Stop;
                                         },
                                         Err(ref error) if error.raw_os_error() == Some(ErrNo::InProgress as i32) => {
-                                            let result = event_loop.try_add_raw_fd_oneshot(fd, Mode::Write);
+                                            let result = self.event_loop.try_add_raw_fd_oneshot(fd, Mode::Write);
                                             match result {
                                                 Ok(mut event) => {
                                                     event.set_callback(&stream,
@@ -172,11 +174,11 @@ pub mod tcp {
                                 stream.send(TryingConnectionToHost(connection_notify, address_infos, count + 1));
                             },
                             Ok(_) => {
-                                if let Err(error) = event_loop.remove_raw_fd(fd) {
+                                if let Err(error) = self.event_loop.remove_raw_fd(fd) {
                                     // TODO: not sure if it makes sense to report this error to the user.
                                     connection_notify.error(error);
                                 }
-                                manage_connection(event_loop, connection, Box::new(connection_notify), Some(&self.connection_stream));
+                                manage_connection(&mut self.event_loop, connection, Box::new(connection_notify), Some(&self.connection_stream));
                                 // TODO: stop handler here.
                             },
                             Err(_) => {
@@ -205,7 +207,7 @@ pub mod tcp {
     impl Handler for Connection {
         type Msg = ConnectionMsg;
 
-        fn update(&mut self, _event_loop: &mut Loop, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
+        fn update(&mut self, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
             match msg {
                 ConnectionMsg::Connected(connection) => self.connection = Some(connection),
                 ConnectionMsg::Write(data) => {
@@ -229,7 +231,8 @@ pub mod tcp {
         match getaddrinfo(Some(host), Some(port), Some(hints)) {
             Ok(address_infos) => {
                 let connection_stream = event_loop.spawn(Connection::new());
-                let stream = event_loop.spawn(Connector::new(&connection_stream));
+                let connector = Connector::new(&connection_stream, event_loop);
+                let stream = event_loop.spawn(connector);
                 stream.send(TryingConnectionToHost(connection_notify, address_infos, 0));
                 Some(connection_stream)
             },
@@ -492,13 +495,15 @@ impl AsRawFd for TcpConnection {
 struct ConnectionComponent {
     connection: TcpConnection,
     connection_notify: Box<TcpConnectionNotify>,
+    event_loop: Loop,
 }
 
 impl ConnectionComponent {
-    fn new(connection: TcpConnection, connection_notify: Box<TcpConnectionNotify>) -> Self {
+    fn new(connection: TcpConnection, connection_notify: Box<TcpConnectionNotify>, event_loop: &Loop) -> Self {
         Self {
             connection,
             connection_notify,
+            event_loop: event_loop.clone(),
         }
     }
 }
@@ -506,14 +511,14 @@ impl ConnectionComponent {
 impl Handler for ConnectionComponent {
     type Msg = ConnectionComponentMsg;
 
-    fn update(&mut self, event_loop: &mut Loop, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
+    fn update(&mut self, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
         match msg {
             ConnectionComponentMsg::ReadWrite(event) => {
                 let mut disposed = false;
                 if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     // TODO: are we sure we want to remove the fd from epoll when there's an error?
-                    if let Err(error) = event_loop.remove_raw_fd(self.connection.as_raw_fd()) {
+                    if let Err(error) = self.event_loop.remove_raw_fd(self.connection.as_raw_fd()) {
                         // TODO: not sure if it makes sense to report this error to the user.
                         self.connection_notify.error(error);
                     }
@@ -532,18 +537,18 @@ impl Handler for ConnectionComponent {
                                 disposed = disposed || self.connection.disposed();
                             }
                             else {
-                                let _ = event_loop.remove_fd(&self.connection);
+                                let _ = self.event_loop.remove_fd(&self.connection);
                                 // TODO: remove the handler as well.
                             }
                         },
                         Err(_) => {
-                            let _ = event_loop.remove_fd(&self.connection);
+                            let _ = self.event_loop.remove_fd(&self.connection);
                             // TODO: remove the handler as well.
                         },
                     }
                 }
                 if event.events & Mode::Write as u32 != 0 {
-                    self.connection.send(event_loop, &mut *self.connection_notify);
+                    self.connection.send(&mut self.event_loop, &mut *self.connection_notify);
                 }
                 if disposed {
                     self.connection_notify.closed(&mut self.connection);
@@ -553,7 +558,7 @@ impl Handler for ConnectionComponent {
             ConnectionComponentMsg::Write(data) =>
                 if let Err(error) = self.connection.write(data) {
                     self.connection_notify.error(error);
-                    let _ = event_loop.remove_fd(&self.connection);
+                    let _ = self.event_loop.remove_fd(&self.connection);
                     // TODO: remove the handler as well.
                 },
         }
@@ -628,7 +633,8 @@ fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut c
 
     match event_loop.try_add_fd(&connection, Mode::ReadWrite) {
         Ok(event) => {
-            let stream = event_loop.spawn(ConnectionComponent::new(connection, connection_notify));
+            let component = ConnectionComponent::new(connection, connection_notify, event_loop);
+            let stream = event_loop.spawn(component);
             event.set_callback(&stream, ConnectionComponentMsg::ReadWrite);
             if let Some(ref connection_stream) = connection_stream {
                 connection_stream.send(ConnectionMsg::Connected(stream));
@@ -639,18 +645,21 @@ fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut c
 }
 
 pub struct TcpListener<L> {
+    event_loop: Loop,
     listen_notify: L,
     tcp_listener: net::TcpListener,
 }
 
 impl<L> TcpListener<L> {
-    pub fn new(tcp_listener: net::TcpListener, listen_notify: L) -> Self {
+    pub fn new(tcp_listener: net::TcpListener, listen_notify: L, event_loop: &Loop) -> Self {
         Self {
+            event_loop: event_loop.clone(),
             listen_notify,
             tcp_listener,
         }
     }
 
+    // FIXME: host should probably be impl ToSocketAddr.
     pub fn ip4(event_loop: &mut Loop, host: &str, mut listen_notify: L)
         -> io::Result<Stream<ListenerMsg>>
     where L: TcpListenNotify + 'static,
@@ -668,7 +677,8 @@ impl<L> TcpListener<L> {
             };
         tcp_listener.set_nonblocking(true)?;
         let fd = tcp_listener.as_raw_fd();
-        let stream = event_loop.spawn(TcpListener::new(tcp_listener, listen_notify));
+        let listener = TcpListener::new(tcp_listener, listen_notify, event_loop);
+        let stream = event_loop.spawn(listener);
         event_loop.add_raw_fd(fd, Mode::Read, &stream, ReadEvent)?;
         Ok(stream)
     }
@@ -679,13 +689,13 @@ where L: TcpListenNotify,
 {
     type Msg = ListenerMsg;
 
-    fn update(&mut self, event_loop: &mut Loop, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
+    fn update(&mut self, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
         match msg {
             ReadEvent(event) => {
                 if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     // TODO: are we sure we want to remove the fd from epoll when there's an error?
-                    if let Err(error) = event_loop.remove_raw_fd(self.tcp_listener.as_raw_fd()) { // TODO: do a version of this method that takes a AsRawFd.
+                    if let Err(error) = self.event_loop.remove_raw_fd(self.tcp_listener.as_raw_fd()) { // TODO: do a version of this method that takes a AsRawFd.
                         // TODO: not sure if it makes sense to report this error to the user.
                         self.listen_notify.error(error);
                     }
@@ -701,7 +711,7 @@ where L: TcpListenNotify,
                                     let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
                                     let mut connection = TcpConnection::new(stream);
                                     connection_notify.accepted(&mut connection);
-                                    manage_connection(event_loop, connection, connection_notify, None);
+                                    manage_connection(&mut self.event_loop, connection, connection_notify, None);
                                 },
                                 Err(error) => self.listen_notify.error(error),
                             }

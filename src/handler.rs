@@ -50,7 +50,7 @@ impl<MSG> Stream<MSG> {
 pub trait Handler {
     type Msg;
 
-    fn update(&mut self, event_loop: &mut Loop, stream: &Stream<Self::Msg>, msg: Self::Msg);
+    fn update(&mut self, stream: &Stream<Self::Msg>, msg: Self::Msg);
 }
 
 struct Component<HANDLER: Handler<Msg=MSG>, MSG> {
@@ -59,20 +59,21 @@ struct Component<HANDLER: Handler<Msg=MSG>, MSG> {
 }
 
 trait Callable {
-    fn process(&mut self, event_loop: &mut Loop);
+    fn process(&mut self);
 }
 
 impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
-    fn process(&mut self, event_loop: &mut Loop) {
+    fn process(&mut self) {
         while let Some(msg) = self.stream.pop() {
-            self.handler.update(event_loop, &self.stream, msg);
+            self.handler.update(&self.stream, msg);
         }
     }
 }
 
+#[derive(Clone)]
 pub struct Loop {
     event_loop: EventLoop,
-    handlers: Slab<Box<Callable>>,
+    handlers: Rc<RefCell<Slab<Box<Callable>>>>,
     stopped: bool,
 }
 
@@ -80,7 +81,7 @@ impl Loop {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             event_loop: EventLoop::new()?,
-            handlers: Slab::new(),
+            handlers: Rc::new(RefCell::new(Slab::new())),
             stopped: false,
         })
     }
@@ -112,7 +113,7 @@ impl Loop {
           MSG: 'static,
     {
         let stream = Stream::new();
-        self.handlers.insert(Box::new(Component {
+        self.handlers.borrow_mut().insert(Box::new(Component {
             handler,
             stream: stream.clone(),
         }));
@@ -121,11 +122,13 @@ impl Loop {
     }
 
     pub fn iterate(&mut self, event_list: &mut [epoll_event]) -> EpollResult {
-        for index in 0..self.handlers.capacity() {
+        let capacity = self.handlers.borrow().capacity();
+        for index in 0..capacity {
             let entry = Entry::from(index);
-            if let Some(mut handler) = self.handlers.reserve_remove(entry) {
-                handler.process(self);
-                self.handlers.set(entry, handler);
+            let value = self.handlers.borrow_mut().reserve_remove(entry);
+            if let Some(mut handler) = value {
+                handler.process();
+                self.handlers.borrow_mut().set(entry, handler);
             }
         }
         self.event_loop.iterate(event_list)

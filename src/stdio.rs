@@ -42,7 +42,7 @@ where NOTIFY: InputNotify,
 {
     type Msg = Msg;
 
-    fn update(&mut self, _event_loop: &mut Loop, _stream: &Stream<Msg>, msg: Msg) {
+    fn update(&mut self, _stream: &Stream<Msg>, msg: Msg) {
         match msg {
             Read(event) => {
                 if event.events & Mode::Read as u32 != 0 {

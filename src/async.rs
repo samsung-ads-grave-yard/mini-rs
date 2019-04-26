@@ -1,6 +1,5 @@
 /*
- * FIXME: that looks wrong to have so much allocations:
- * total heap usage: 1,824,371 allocs, 1,824,213 frees, 14,624,698 bytes allocated
+ * TODO: reuse buffers.
  */
 
 use std::cell::RefCell;
@@ -14,7 +13,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::u64;
 
-use slab::{Entry, Slab};
+use slab::Slab;
 
 const MAX_EVENTS: usize = 100; // TODO: tweak this value.
 
@@ -36,6 +35,7 @@ impl<T> FnBox for T where T: FnOnce(ffi::epoll_event) {
 }
 
 enum Callback {
+    Empty,
     Normal(Box<FnMut(ffi::epoll_event) -> Action>),
     Oneshot(Box<FnBox>),
 }
@@ -47,12 +47,12 @@ pub enum Action {
 }
 
 pub struct Event {
-    callback_entry: Entry,
+    callback_entry: usize,
     event_loop: EventLoop,
 }
 
 impl Event {
-    fn new(callback_entry: Entry, event_loop: &EventLoop) -> Self {
+    fn new(callback_entry: usize, event_loop: &EventLoop) -> Self {
         Self {
             callback_entry,
             event_loop: event_loop.clone(),
@@ -62,17 +62,17 @@ impl Event {
     pub fn set_callback<F>(self, callback: F)
     where F: FnMut(ffi::epoll_event) -> Action + 'static,
     {
-        self.event_loop.callbacks.borrow_mut().set(self.callback_entry, Callback::Normal(Box::new(callback)));
+        self.event_loop.callbacks.borrow_mut()[self.callback_entry] = Callback::Normal(Box::new(callback));
     }
 }
 
 pub struct EventOnce {
-    callback_entry: Entry,
+    callback_entry: usize,
     event_loop: EventLoop,
 }
 
 impl EventOnce {
-    fn new(callback_entry: Entry, event_loop: EventLoop) -> Self {
+    fn new(callback_entry: usize, event_loop: EventLoop) -> Self {
         Self {
             callback_entry,
             event_loop: event_loop.clone(),
@@ -82,7 +82,7 @@ impl EventOnce {
     pub fn set_callback<F>(self, callback: F)
     where F: FnOnce(ffi::epoll_event) + 'static,
     {
-        self.event_loop.callbacks.borrow_mut().set(self.callback_entry, Callback::Oneshot(Box::new(callback)));
+        self.event_loop.callbacks.borrow_mut()[self.callback_entry] = Callback::Oneshot(Box::new(callback));
     }
 }
 
@@ -141,7 +141,7 @@ impl EventLoop {
         let mut event = ffi::epoll_event {
             events: mode as u32,
             data: ffi::epoll_data_t {
-                u64: callback_entry.index() as u64,
+                u64: callback_entry as u64,
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
@@ -158,7 +158,7 @@ impl EventLoop {
         let mut event = ffi::epoll_event {
             events: mode as u32 & !ffi::EPOLLEXCLUSIVE | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
-                u64: callback_entry.index() as u64,
+                u64: callback_entry as u64,
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
@@ -180,11 +180,11 @@ impl EventLoop {
     }
 
     pub fn try_add_raw_fd(&self, fd: RawFd, mode: Mode) -> io::Result<Event> {
-        let callback_entry = self.callbacks.borrow_mut().reserve_entry();
+        let callback_entry = self.callbacks.borrow_mut().insert(Callback::Empty);
         let mut event = ffi::epoll_event {
             events: mode as u32,
             data: ffi::epoll_data_t {
-                u64: callback_entry.index() as u64,
+                u64: callback_entry as u64,
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
@@ -195,11 +195,11 @@ impl EventLoop {
     }
 
     pub fn try_add_raw_fd_oneshot(&self, fd: RawFd, mode: Mode) -> io::Result<EventOnce> {
-        let callback_entry = self.callbacks.borrow_mut().reserve_entry();
+        let callback_entry = self.callbacks.borrow_mut().insert(Callback::Empty);
         let mut event = ffi::epoll_event {
             events: mode as u32 & !ffi::EPOLLEXCLUSIVE | ffi::EPOLLONESHOT,
             data: ffi::epoll_data_t {
-                u64: callback_entry.index() as u64,
+                u64: callback_entry as u64,
             },
         };
         if unsafe { ffi::epoll_ctl(self.fd, ffi::EpollOperation::Add, fd, &mut event) } == -1 {
@@ -234,30 +234,28 @@ impl EventLoop {
                     continue;
                 }
             }
-            let entry = unsafe { Entry::from(event.data.u64 as usize) };
+            let entry = unsafe { event.data.u64 as usize };
+            // NOTE: Remove the callback because callbacks can be added in the update() method.
+            let callback = std::mem::replace(&mut self.callbacks.borrow_mut()[entry], Callback::Empty);
             let callback =
-                match self.callbacks.borrow_mut().remove(entry) {
-                    Some(mut callback) => {
-                        match callback {
-                            Callback::Normal(mut callback) => {
-                                if callback(event) == Action::Stop {
-                                    None
-                                }
-                                else {
-                                    Some(Callback::Normal(callback))
-                                }
-                            },
-                            Callback::Oneshot(callback) => {
-                                let callback: Box<_> = callback;
-                                callback.call_box(event);
-                                None
-                            },
+                match callback {
+                    Callback::Empty => panic!("callback should not be empty"),
+                    Callback::Normal(mut callback) => {
+                        if callback(event) == Action::Stop {
+                            None
+                        }
+                        else {
+                            Some(Callback::Normal(callback))
                         }
                     },
-                    None => panic!("No callback"),
+                    Callback::Oneshot(callback) => {
+                        let callback: Box<_> = callback;
+                        callback.call_box(event);
+                        None
+                    },
                 };
             if let Some(callback) = callback {
-                self.callbacks.borrow_mut().set(entry, callback);
+                self.callbacks.borrow_mut()[entry] = callback;
             }
         }
 

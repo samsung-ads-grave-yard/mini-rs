@@ -16,7 +16,7 @@ use async::{
     event_list,
 };
 use async::ffi::epoll_event;
-use slab::{Entry, Slab};
+use slab::Slab;
 
 pub struct Stream<MSG> {
     elements: Rc<RefCell<VecDeque<MSG>>>,
@@ -60,6 +60,14 @@ struct Component<HANDLER: Handler<Msg=MSG>, MSG> {
 
 trait Callable {
     fn process(&mut self);
+}
+
+struct NotCallable;
+
+impl Callable for NotCallable {
+    fn process(&mut self) {
+        panic!("Not callable");
+    }
 }
 
 impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
@@ -124,11 +132,12 @@ impl Loop {
     pub fn iterate(&mut self, event_list: &mut [epoll_event]) -> EpollResult {
         let capacity = self.handlers.borrow().capacity();
         for index in 0..capacity {
-            let entry = Entry::from(index);
-            let value = self.handlers.borrow_mut().reserve_remove(entry);
-            if let Some(mut handler) = value {
+            let entry = index;
+            if self.handlers.borrow().contains(entry) {
+                // NOTE: Remove the handler because handlers can be added in the update() method.
+                let mut handler = std::mem::replace(&mut self.handlers.borrow_mut()[entry], Box::new(NotCallable));
                 handler.process();
-                self.handlers.borrow_mut().set(entry, handler);
+                self.handlers.borrow_mut()[entry] = handler;
             }
         }
         self.event_loop.iterate(event_list)

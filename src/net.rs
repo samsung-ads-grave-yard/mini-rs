@@ -473,11 +473,10 @@ impl TcpConnection {
 
     pub fn write(&self, buffer: Vec<u8>) -> io::Result<()> {
         let buffer_size = buffer.len();
-        let mut stream = self.connection.borrow().stream.try_clone()?;
         let mut index = 0;
         while index < buffer.len() {
             // TODO: yield to avoid starvation?
-            match stream.write(&buffer[index..]) {
+            match self.connection.borrow_mut().stream.write(&buffer[index..]) {
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     self.connection.borrow_mut().buffers.push_back(Buffer::new(buffer, index));
                     return Ok(());

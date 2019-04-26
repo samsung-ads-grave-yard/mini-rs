@@ -8,7 +8,11 @@ use std::io::{
     Write,
 };
 use std::mem;
-use std::net::{self, TcpStream};
+use std::net::{
+    self,
+    Shutdown,
+    TcpStream,
+};
 use std::os::unix::io::{
     AsRawFd,
     RawFd,
@@ -436,6 +440,11 @@ impl TcpConnection {
         }
     }
 
+    fn close(&self) {
+        println!("Shutdown");
+        let _ = self.connection.borrow().stream.shutdown(Shutdown::Both); // TODO: handle error.
+    }
+
     // TODO: in debug mode, warn if dispose is not called (to help in detecting leaks). Maybe
     // easier to just check if the difference of the number of callbacks allocation - the number of
     // callbacks deallocation is greater than 0.
@@ -523,7 +532,8 @@ impl Handler for ConnectionComponent {
                         self.connection_notify.error(error);
                     }
                     self.connection_notify.closed(&mut self.connection); // FIXME: should it only be called for HangupError?
-                    // TODO: stop.
+                    self.connection.close();
+                    // TODO: stop handler.
                 }
                 if event.events & Mode::Read as u32 != 0 {
                     let mut buffer = vec![0; 4096];
@@ -552,7 +562,8 @@ impl Handler for ConnectionComponent {
                 }
                 if disposed {
                     self.connection_notify.closed(&mut self.connection);
-                    // TODO: stop
+                    self.connection.close();
+                    // TODO: stop handler.
                 }
             },
             ConnectionComponentMsg::Write(data) =>
@@ -613,6 +624,7 @@ pub trait TcpConnectionNotify {
     }
 
     fn closed(&mut self, _connection: &mut TcpConnection) {
+        // TODO: since EPOLLEXCLUSIVE cannot be used with EPOLLRDHUP, not sure how useful this is.
     }
 
     fn throttled(&mut self, _connection: &mut TcpConnection) {

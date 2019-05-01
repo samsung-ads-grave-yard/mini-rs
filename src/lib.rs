@@ -33,6 +33,12 @@
 // Later:
 // * metrics (probably trivial-statsd)
 
+pub mod async;
 pub mod fs;
 pub mod getopts;
+pub mod handler;
+pub mod http;
+pub mod net;
 pub mod rand;
+mod slab;
+pub mod stdio;

@@ -137,7 +137,7 @@ pub mod tcp {
                                         Err(ref error) if error.raw_os_error() == Some(ErrNo::InProgress as i32) => {
                                             let result = self.event_loop.try_add_raw_fd_oneshot(fd, Mode::Write);
                                             match result {
-                                                Ok(mut event) => {
+                                                Ok(event) => {
                                                     event.set_callback(&stream,
                                                         // TODO: check if it should be count + 1.
                                                         move |event| WriteEvent(event, connection, connection_notify, address_infos, count)
@@ -476,9 +476,10 @@ impl TcpConnection {
         let mut index = 0;
         while index < buffer.len() {
             // TODO: yield to avoid starvation?
-            match self.connection.borrow_mut().stream.write(&buffer[index..]) {
+            let mut connection = self.connection.borrow_mut();
+            match connection.stream.write(&buffer[index..]) {
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.connection.borrow_mut().buffers.push_back(Buffer::new(buffer, index));
+                    connection.buffers.push_back(Buffer::new(buffer, index));
                     return Ok(());
                 },
                 Err(error) => return Err(error),

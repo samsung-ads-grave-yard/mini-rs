@@ -1,119 +1,155 @@
 use std::cmp::min;
-use std::io::{self, IoSlice, Write};
+use std::io::{
+    self,
+    IoSlice,
+    IoSliceMut,
+    Read,
+    Write,
+};
 
 pub struct Buffer {
     data: Vec<u8>,
-    first: usize,
-    last: usize,
+    read_index: usize,
+    write_index: usize,
 }
 
 impl Buffer {
-    /// The buffer will hold capacity - 1 elements since one memory location is used a sentinel.
     pub fn new(capacity: usize) -> Self {
-        let first = capacity / 2;
-        let last = first;
+        assert!(capacity.is_power_of_two());
+        let read_index = capacity / 2;
+        let write_index = read_index;
         Self {
             data: vec![0; capacity],
-            first,
-            last,
+            read_index,
+            write_index,
         }
     }
 
-    fn drop_n_front(&mut self, count: usize) {
-        if self.first <= self.last {
-            let len = min(self.last - self.first, count);
-            self.first += len;
+    pub fn drain_to_vec(&mut self) -> Vec<u8> {
+        let mut result = vec![0; self.size()];
+        let read_index = self.mask(self.read_index);
+        let write_index = self.mask(self.write_index);
+        if read_index < write_index {
+            println!("Size: {}: {} {}", self.size(), write_index, read_index);
+            result.copy_from_slice(&self.data[read_index..write_index]);
         }
         else {
-            let len = min(self.data.len() - self.first, count);
-            if len < count {
-                let len = min(self.last, count - len);
-                self.first = len;
-            }
-            else {
-                self.first = (self.first + len) % self.data.len();
-            }
+            let end = self.data.capacity() - read_index;
+            &mut result[..end].copy_from_slice(&self.data[read_index..]);
+            &mut result[end..].copy_from_slice(&self.data[..write_index]);
         }
+        self.read_index = self.data.capacity() / 2;
+        self.write_index = self.read_index;
+        result
+    }
+
+    pub fn drop_n_front(&mut self, count: usize) {
+        self.read_index = self.read_index.wrapping_add(min(self.size(), count));
     }
 
     /// Returns the number of elements that were copied into the buffer.
     pub fn extend_back(&mut self, elements: &[u8]) -> usize {
-        if self.last < self.first {
-            let len = min(self.first - self.last - 1, elements.len()); // NOTE: minus one for the sentinel.
-            let end = self.last + len;
-            self.data[self.last..end].copy_from_slice(&elements[..len]);
-            len
+        // TODO: if elements.is_empty(), return 0 immediately?
+        let space_left = self.data.capacity() - self.size();
+        let count = elements.len();
+        let insert_count = min(count, space_left);
+        let write_index = self.mask(self.write_index.wrapping_add(1));
+        let end_length = min(self.data.capacity() - write_index, insert_count);
+        let end = write_index + end_length;
+        self.data[write_index..end].copy_from_slice(&elements[..end_length]);
+        if insert_count > end_length {
+            let start_length = insert_count - end_length;
+            self.data[..start_length].copy_from_slice(&elements[end_length..insert_count]);
         }
-        else {
-            let mut len = min(self.data.len() - self.last, elements.len());
-            let mut end = self.last + len;
-            self.data[self.last..end].copy_from_slice(&elements[..len]);
-            if len < elements.len() {
-                end = min(elements.len() - len, self.first - 1);
-                let end2 = len + end;
-                self.data[..end].copy_from_slice(&elements[len..end2]);
-                len += end;
-            }
-            self.last = end;
-            // TODO: copy to the start if needed.
-            len
-        }
+        self.write_index = self.write_index.wrapping_add(insert_count);
+        insert_count
     }
 
-    #[inline]
-    fn next_index(&self, index: usize) -> usize {
-        (index + 1) % self.data.len()
+    pub fn is_empty(&self) -> bool {
+        self.read_index == self.write_index
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.size() == self.data.capacity()
+    }
+
+    fn mask(&self, index: usize) -> usize {
+        index & (self.data.capacity() - 1)
     }
 
     pub fn pop_front(&mut self) -> Option<u8> {
-        if self.first != self.last {
-            let result = self.data[self.first];
-            self.first = self.next_index(self.first);
-            Some(result)
+        if self.is_empty() {
+            return None;
         }
-        else {
-            None
-        }
+        self.read_index = self.read_index.wrapping_add(1);
+        let index = self.mask(self.read_index);
+        Some(self.data[index])
     }
 
     pub fn push_back(&mut self, element: u8) -> bool {
-        let index = self.next_index(self.last);
-        if index != self.first {
-            self.data[self.last] = element;
-            self.last = index;
-            true
+        if self.is_full() {
+            return false;
         }
-        else {
-            false
-        }
+        self.write_index = self.write_index.wrapping_add(1);
+        let index = self.mask(self.write_index);
+        self.data[index] = element;
+        true
+    }
+
+    pub fn read_from<R: Read>(&mut self, stream: &mut R) -> io::Result<usize> {
+        let masked_read = self.mask(self.read_index.wrapping_add(1));
+        let masked_write = self.mask(self.write_index.wrapping_add(1));
+        // TODO: special case for empty buffer?
+        let size =
+            if masked_write < masked_read {
+                stream.read(&mut self.data[masked_write..masked_read])?
+            }
+            else {
+                let (start, end) = self.data.split_at_mut(masked_read);
+                let start_index = masked_write - masked_read;
+                stream.read_vectored(&mut [
+                    IoSliceMut::new(&mut end[start_index..]),
+                    IoSliceMut::new(start),
+                ])?
+            };
+        self.write_index = self.write_index.wrapping_add(size);
+        Ok(size)
     }
 
     pub fn write_to<W: Write>(&mut self, stream: &mut W) -> io::Result<()> {
+        let masked_read = self.mask(self.read_index.wrapping_add(1));
+        let masked_write = self.mask(self.write_index.wrapping_add(1));
         let size =
-            if self.first == self.last {
+            if self.is_empty() {
                 return Ok(());
             }
-            else if self.first < self.last {
-                stream.write_vectored(&[IoSlice::new(&self.data[self.first..self.last])])?
+            else if masked_read < masked_write {
+                stream.write(&self.data[masked_read..masked_write])?
             }
             else {
                 stream.write_vectored(&[
-                    IoSlice::new(&self.data[self.first..]),
-                    IoSlice::new(&self.data[..self.last]),
+                    IoSlice::new(&self.data[masked_read..]),
+                    IoSlice::new(&self.data[..masked_write]),
                 ])?
             };
         self.drop_n_front(size);
         Ok(())
     }
+
+    pub fn size(&self) -> usize {
+        self.write_index - self.read_index
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::Buffer;
 
     #[test]
     fn test_buffer() {
-        let mut buffer = Buffer::new(10);
+        let mut buffer = Buffer::new(16);
         assert!(buffer.push_back(1));
         assert!(buffer.push_back(2));
         assert!(buffer.push_back(3));
@@ -123,13 +159,13 @@ mod tests {
         assert_eq!(buffer.pop_front(), Some(3));
         assert_eq!(buffer.pop_front(), None);
 
-        for i in 1..10 {
+        for i in 0..16 {
             assert!(buffer.push_back(i));
         }
 
-        assert!(!buffer.push_back(10));
+        assert!(!buffer.push_back(16));
 
-        for i in 1..10 {
+        for i in 0..16 {
             assert_eq!(buffer.pop_front(), Some(i));
         }
 
@@ -151,9 +187,9 @@ mod tests {
         assert_eq!(buffer.pop_front(), Some(3));
         assert_eq!(buffer.pop_front(), None);
 
-        assert_eq!(buffer.extend_back(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 9);
+        assert_eq!(buffer.extend_back(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), 15);
 
-        for i in 1..10 {
+        for i in 1..16 {
             assert_eq!(buffer.pop_front(), Some(i));
         }
 
@@ -169,13 +205,13 @@ mod tests {
         assert_eq!(buffer.pop_front(), None);
 
         assert_eq!(buffer.extend_back(&[1, 2, 3]), 3);
-        assert_eq!(buffer.extend_back(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 6);
+        assert_eq!(buffer.extend_back(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), 13);
 
         assert_eq!(buffer.pop_front(), Some(1));
         assert_eq!(buffer.pop_front(), Some(2));
         assert_eq!(buffer.pop_front(), Some(3));
 
-        for i in 1..=6 {
+        for i in 1..=13 {
             assert_eq!(buffer.pop_front(), Some(i));
         }
 
@@ -216,15 +252,81 @@ mod tests {
 
         assert_eq!(buffer.pop_front(), None);
 
-        // TODO: test drop_n_front(0) and extend_back(&[]).
+        assert_eq!(buffer.extend_back(&[]), 0);
+        assert_eq!(buffer.pop_front(), None);
+
+        buffer.drop_n_front(0);
+        assert_eq!(buffer.pop_front(), None);
+
+        assert_eq!(buffer.extend_back(&[1]), 1);
+        assert_eq!(buffer.extend_back(&[]), 0);
+        buffer.drop_n_front(0);
+        assert_eq!(buffer.pop_front(), Some(1));
+        assert_eq!(buffer.pop_front(), None);
     }
 
     #[test]
     fn test_buffer_write() {
-        let mut buffer = Buffer::new(10);
-        assert_eq!(buffer.extend_back(&[1, 2, 3, 4, 5, 6, 7, 8, 9]), 9);
+        let mut buffer = Buffer::new(16);
+        assert_eq!(buffer.extend_back(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), 16);
         let mut vector = vec![];
-        buffer.write_to(&mut vector);
-        assert_eq!(vector, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        buffer.write_to(&mut vector).expect("write to");
+        assert_eq!(vector, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert!(buffer.is_empty());
+
+        let mut vector = vec![];
+        buffer.write_to(&mut vector).expect("write to");
+        assert_eq!(vector, &[]);
+
+        assert!(buffer.push_back(1));
+        buffer.write_to(&mut vector).expect("write to");
+        assert_eq!(vector, &[1]);
+
+        let mut vector = vec![];
+        assert!(buffer.push_back(1));
+        assert!(buffer.push_back(2));
+        buffer.write_to(&mut vector).expect("write to");
+        assert_eq!(vector, &[1, 2]);
+    }
+
+    #[test]
+    fn test_buffer_read() {
+        let mut buffer = Buffer::new(16);
+        buffer.read_from(&mut Cursor::new(vec![1, 2, 3])).expect("read from");
+
+        for i in 1..=3 {
+            assert_eq!(buffer.pop_front(), Some(i));
+        }
+        assert_eq!(buffer.pop_front(), None);
+
+        buffer.read_from(&mut Cursor::new(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])).expect("read from");
+        for i in 1..=15 {
+            assert_eq!(buffer.pop_front(), Some(i));
+        }
+        assert_eq!(buffer.pop_front(), None);
+
+        buffer.read_from(&mut Cursor::new(vec![1, 2, 3, 4, 5, 6, 7, 8])).expect("read from");
+        for i in 1..=8 {
+            assert_eq!(buffer.pop_front(), Some(i));
+        }
+        assert_eq!(buffer.pop_front(), None);
+
+        buffer.read_from(&mut Cursor::new(vec![1, 2, 3, 4, 5])).expect("read from");
+        for i in 1..=5 {
+            assert_eq!(buffer.pop_front(), Some(i));
+        }
+        assert_eq!(buffer.pop_front(), None);
+
+        buffer.read_from(&mut Cursor::new(vec![1, 2, 3])).expect("read from");
+        for i in 1..=3 {
+            assert_eq!(buffer.pop_front(), Some(i));
+        }
+        assert_eq!(buffer.pop_front(), None);
+
+        buffer.read_from(&mut Cursor::new(vec![1, 2, 3, 4, 5, 6, 7])).expect("read from");
+        for i in 1..=7 {
+            assert_eq!(buffer.pop_front(), Some(i));
+        }
+        assert_eq!(buffer.pop_front(), None);
     }
 }

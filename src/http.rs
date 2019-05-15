@@ -96,9 +96,7 @@ where HANDLER: HttpHandler,
     }
 
     fn connected(&mut self, connection: &mut TcpConnection) {
-        if let Err(error) = connection.write(format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", self.uri).into_bytes()) {
-            self.handler.error(error);
-        }
+        connection.write(format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", self.uri).into_bytes());
     }
 
     fn error(&mut self, error: io::Error) {

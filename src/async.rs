@@ -1,4 +1,5 @@
 /*
+ * TODO: look at how seastar (http://seastar.io/) implements this stuff.
  * TODO: reuse buffers.
  */
 

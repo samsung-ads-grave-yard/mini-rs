@@ -105,10 +105,7 @@ impl TcpConnectionNotify for Server {
         let content = format!("You're on page {} and you queried {}", path, query_string);
         let len = content.len();
         let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{}", len, content);
-        let result = connection.write(response.into_bytes()); // TODO: handle errors.
-        if let Err(error) = result {
-            println!("{}", error);
-        }
+        connection.write(response.into_bytes());
     }
 
     fn closed(&mut self, _connection: &mut TcpConnection) {

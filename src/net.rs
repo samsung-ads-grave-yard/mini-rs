@@ -1,12 +1,7 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::io;
-use std::io::{
-    ErrorKind,
-    Read,
-    Write,
-};
+use std::io::ErrorKind;
 use std::mem;
 use std::net::{
     self,
@@ -23,6 +18,7 @@ use std::str;
 
 use async::{self, Mode};
 use async::ffi::epoll_event;
+use buffer::Buffer;
 use handler::{
     Loop,
     Handler,
@@ -30,6 +26,8 @@ use handler::{
 };
 
 use self::ListenerMsg::*;
+
+const BUFFER_SIZE: usize = 4096;
 
 #[repr(u32)]
 enum StatusMode {
@@ -351,36 +349,6 @@ pub fn getsockopt(socket: RawFd, level: i32, name: i32) -> io::Result<i32> {
     Ok(option_value)
 }
 
-struct Buffer {
-    buffer: Vec<u8>,
-    index: usize,
-}
-
-impl Buffer {
-    fn new(buffer: Vec<u8>, index: usize) -> Self {
-        Self {
-            buffer,
-            index,
-        }
-    }
-
-    fn advance(&mut self, count: usize) {
-        self.index += count;
-    }
-
-    fn exhausted(&self) -> bool {
-        self.index >= self.len()
-    }
-
-    fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    fn slice(&self) -> &[u8] {
-        &self.buffer[self.index..]
-    }
-}
-
 pub enum ConnectionMsg {
     Connected(Stream<ConnectionComponentMsg>),
     Write(Vec<u8>),
@@ -392,34 +360,23 @@ pub enum ConnectionComponentMsg {
 }
 
 struct _TcpConnection {
-    // TODO: should the VecDeque be bounded?
-    buffers: VecDeque<Buffer>, // The system should probably reuse the buffer and keep adding to it even if the trait does not consume its data. That should be better than a Vec inside a VecDeque.
     disposed: bool,
+    read_buffer: Buffer,
     stream: TcpStream,
+    write_buffer: Buffer, // The system should probably reuse the buffer and keep adding to it even if the trait does not consume its data. That should be better than a Vec inside a VecDeque.
 }
 
 impl _TcpConnection {
     fn send(&mut self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
-        let mut remove_buffer = false;
-        if let Some(ref mut first_buffer) = self.buffers.front_mut() {
-            match self.stream.write(first_buffer.slice()) {
-                Ok(written) => {
-                    first_buffer.advance(written);
-                    if first_buffer.exhausted() {
-                        remove_buffer = true;
-                    }
-                },
-                Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
-                Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                Err(error) => {
-                    connection_notify.error(error);
-                    let _ = event_loop.remove_fd(&self.stream);
-                    // TODO: remove the handler as well.
-                },
-            }
-        }
-        if remove_buffer {
-            self.buffers.pop_front();
+        match self.write_buffer.write_to(&mut self.stream) {
+            Ok(()) => (),
+            Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
+            Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+            Err(error) => {
+                connection_notify.error(error);
+                let _ = event_loop.remove_fd(&self.stream);
+                // TODO: remove the handler as well.
+            },
         }
     }
 }
@@ -433,9 +390,10 @@ impl TcpConnection {
     pub fn new(stream: TcpStream) -> Self {
         Self {
             connection: Rc::new(RefCell::new(_TcpConnection {
-                buffers: VecDeque::new(),
                 disposed: false,
+                read_buffer: Buffer::new(BUFFER_SIZE),
                 stream,
+                write_buffer: Buffer::new(BUFFER_SIZE),
             })),
         }
     }
@@ -462,8 +420,10 @@ impl TcpConnection {
         tcp::connect_to_host(host, &port.to_string(), event_loop, connection)
     }
 
-    fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.connection.borrow_mut().stream.read(buffer)
+    fn read(&self) -> io::Result<usize> {
+        let mut connection = self.connection.borrow_mut();
+        let connection = &mut *connection;
+        connection.read_buffer.read_from(&mut connection.stream)
     }
 
     fn send(&self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
@@ -471,27 +431,8 @@ impl TcpConnection {
         connection.send(event_loop, connection_notify);
     }
 
-    pub fn write(&self, buffer: Vec<u8>) -> io::Result<()> {
-        let buffer_size = buffer.len();
-        let mut index = 0;
-        while index < buffer.len() {
-            // TODO: yield to avoid starvation?
-            let mut connection = self.connection.borrow_mut();
-            match connection.stream.write(&buffer[index..]) {
-                Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
-                    connection.buffers.push_back(Buffer::new(buffer, index));
-                    return Ok(());
-                },
-                Err(error) => return Err(error),
-                Ok(written) => {
-                    index += written;
-                    if index >= buffer_size {
-                        return Ok(());
-                    }
-                },
-            }
-        }
-        Ok(())
+    pub fn write(&self, buffer: Vec<u8>) {
+        self.connection.borrow_mut().write_buffer.extend_back(&buffer);
     }
 }
 
@@ -536,13 +477,12 @@ impl Handler for ConnectionComponent {
                     // TODO: stop handler.
                 }
                 if event.events & Mode::Read as u32 != 0 {
-                    let mut buffer = vec![0; 4096];
-                    match self.connection.read(&mut buffer) {
+                    match self.connection.read() {
                         Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
                             error.kind() == ErrorKind::Interrupted => (),
                         Ok(bytes_read) => {
                             if bytes_read > 0 {
-                                buffer.truncate(bytes_read);
+                                let buffer = self.connection.connection.borrow_mut().read_buffer.drain_to_vec();
                                 self.connection_notify.received(&mut self.connection, buffer);
                                 disposed = disposed || self.connection.disposed();
                             }
@@ -566,12 +506,7 @@ impl Handler for ConnectionComponent {
                     // TODO: stop handler.
                 }
             },
-            ConnectionComponentMsg::Write(data) =>
-                if let Err(error) = self.connection.write(data) {
-                    self.connection_notify.error(error);
-                    let _ = self.event_loop.remove_fd(&self.connection);
-                    // TODO: remove the handler as well.
-                },
+            ConnectionComponentMsg::Write(data) => self.connection.write(data),
         }
     }
 }

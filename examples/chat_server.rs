@@ -45,9 +45,7 @@ impl Handler for ChatHandler {
             Accepted(tcp_connection) => self.clients.push(tcp_connection),
             Received(data) => {
                 for client in &self.clients {
-                    if let Err(error) = client.write(data.clone()) {
-                        eprintln!("Error send message: {}", error);
-                    }
+                    client.write(data.clone());
                 }
                 if data == b"/quit\n" {
                     self.event_loop.stop();

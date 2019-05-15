@@ -34,6 +34,7 @@
 // * metrics (probably trivial-statsd)
 
 pub mod async;
+mod buffer;
 pub mod fs;
 pub mod getopts;
 pub mod handler;

@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io;
+use std::mem;
 use std::os::unix::io::{
     AsRawFd,
     RawFd,
@@ -20,20 +21,26 @@ use slab::Slab;
 
 pub struct Stream<MSG> {
     elements: Rc<RefCell<VecDeque<MSG>>>,
+    entry: usize,
+    registered_entries: Rc<RefCell<Vec<usize>>>,
 }
 
 impl<MSG> Clone for Stream<MSG> {
     fn clone(&self) -> Self {
         Self {
             elements: self.elements.clone(),
+            entry: self.entry.clone(),
+            registered_entries: self.registered_entries.clone(),
         }
     }
 }
 
 impl<MSG> Stream<MSG> {
-    fn new() -> Self {
+    fn new(registered_entries: Rc<RefCell<Vec<usize>>>, entry: usize) -> Self {
         Self {
             elements: Rc::new(RefCell::new(VecDeque::new())),
+            entry,
+            registered_entries,
         }
     }
 
@@ -43,6 +50,7 @@ impl<MSG> Stream<MSG> {
 
     pub fn send(&self, msg: MSG) {
         self.elements.borrow_mut().push_back(msg);
+        self.registered_entries.borrow_mut().push(self.entry);
         EventLoop::wakeup();
     }
 }
@@ -82,6 +90,7 @@ impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
 pub struct Loop {
     event_loop: EventLoop,
     handlers: Rc<RefCell<Slab<Box<Callable>>>>,
+    registered_entries: Rc<RefCell<Vec<usize>>>,
     stopped: bool,
 }
 
@@ -90,6 +99,7 @@ impl Loop {
         Ok(Self {
             event_loop: EventLoop::new()?,
             handlers: Rc::new(RefCell::new(Slab::new())),
+            registered_entries: Rc::new(RefCell::new(vec![])),
             stopped: false,
         })
     }
@@ -120,8 +130,10 @@ impl Loop {
     where HANDLER: Handler<Msg=MSG> + 'static,
           MSG: 'static,
     {
-        let stream = Stream::new();
-        self.handlers.borrow_mut().insert(Box::new(Component {
+        let mut handlers = self.handlers.borrow_mut();
+        let entry = handlers.vacant_entry();
+        let stream = Stream::new(self.registered_entries.clone(), entry.key());
+        entry.insert(Box::new(Component {
             handler,
             stream: stream.clone(),
         }));
@@ -130,9 +142,8 @@ impl Loop {
     }
 
     pub fn iterate(&mut self, event_list: &mut [epoll_event]) -> EpollResult {
-        let capacity = self.handlers.borrow().capacity();
-        for index in 0..capacity {
-            let entry = index;
+        let registered_entries = mem::replace(&mut *self.registered_entries.borrow_mut(), vec![]);
+        for entry in registered_entries {
             if self.handlers.borrow().contains(entry) {
                 // NOTE: Remove the handler because handlers can be added in the update() method.
                 let mut handler = std::mem::replace(&mut self.handlers.borrow_mut()[entry], Box::new(NotCallable));

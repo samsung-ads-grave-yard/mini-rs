@@ -86,6 +86,7 @@ impl<HANDLER: HttpHandler> TcpConnectionNotify for Server<HANDLER> {
     }
 }
 
+#[derive(PartialEq)]
 pub enum Method {
     Get,
     Post,

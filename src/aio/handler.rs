@@ -8,7 +8,7 @@ use std::os::unix::io::{
 };
 use std::rc::Rc;
 
-use async::{
+use aio::async::{
     self,
     Action,
     EpollResult,
@@ -16,8 +16,8 @@ use async::{
     Mode,
     event_list,
 };
-use async::ffi::epoll_event;
-use slab::Slab;
+use aio::async::ffi::epoll_event;
+use aio::slab::Slab;
 
 pub struct Stream<MSG> {
     elements: Rc<RefCell<VecDeque<MSG>>>,

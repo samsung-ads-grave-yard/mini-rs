@@ -6,14 +6,14 @@ use std::io::{
     stdin,
 };
 
-use async::Mode;
-use async::ffi::epoll_event;
-use handler::{
+use aio::async::Mode;
+use aio::async::ffi::epoll_event;
+use aio::handler::{
     Loop,
     Handler,
     Stream,
 };
-use net::set_nonblocking;
+use aio::net::set_nonblocking;
 
 use self::Msg::*;
 

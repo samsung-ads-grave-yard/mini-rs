@@ -24,9 +24,9 @@ use std::sync::mpsc::{
 };
 use std::thread;
 
-use mini::async::Mode;
-use mini::handler::Loop;
-use mini::net::{
+use mini::aio::async::Mode;
+use mini::aio::handler::Loop;
+use mini::aio::net::{
     ListenerMsg::ReadEvent,
     TcpConnection,
     TcpConnectionNotify,

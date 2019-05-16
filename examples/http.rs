@@ -2,12 +2,12 @@ extern crate mini;
 
 use std::io;
 
-use mini::handler::{
+use mini::aio::handler::{
     Handler,
     Loop,
     Stream,
 };
-use mini::http::{
+use mini::aio::http::{
     DefaultHttpHandler,
     Http,
     HttpHandlerIgnoreErr,

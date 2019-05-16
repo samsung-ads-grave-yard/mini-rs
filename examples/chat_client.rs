@@ -2,16 +2,16 @@ extern crate mini;
 
 use std::io;
 
-use mini::handler::{
+use mini::aio::handler::{
     Loop,
     Stream,
 };
-use mini::net::{
+use mini::aio::net::{
     ConnectionMsg::{self, Write},
     TcpConnection,
     TcpConnectionNotify,
 };
-use mini::stdio::{
+use mini::aio::stdio::{
     InputNotify,
     Stdin,
 };

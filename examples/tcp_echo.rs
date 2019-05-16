@@ -2,13 +2,13 @@ extern crate mini;
 
 use std::net;
 
-use mini::handler::Loop;
-use mini::net::{
+use mini::aio::handler::Loop;
+use mini::aio::net::{
     TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::net::TcpListener;
+use mini::aio::net::TcpListener;
 
 struct Listener {
 }

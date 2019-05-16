@@ -3,17 +3,17 @@ extern crate mini;
 use std::os::unix::io::AsRawFd;
 use std::net;
 
-use mini::handler::{
+use mini::aio::handler::{
     Handler,
     Loop,
     Stream,
 };
-use mini::net::{
+use mini::aio::net::{
     TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use mini::net::TcpListener;
+use mini::aio::net::TcpListener;
 
 use self::Msg::*;
 

@@ -13,7 +13,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::u64;
 
-use slab::Slab;
+use aio::slab::Slab;
 
 const MAX_EVENTS: usize = 100; // TODO: tweak this value.
 

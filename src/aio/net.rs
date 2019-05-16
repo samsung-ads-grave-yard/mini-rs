@@ -21,9 +21,9 @@ use std::ptr;
 use std::rc::Rc;
 use std::str;
 
-use async::{self, Mode};
-use async::ffi::epoll_event;
-use handler::{
+use aio::async::{self, Mode};
+use aio::async::ffi::epoll_event;
+use aio::handler::{
     Loop,
     Handler,
     Stream,
@@ -63,11 +63,9 @@ pub mod tcp {
     };
     use std::marker::PhantomData;
 
-    use async::{
-        Mode,
-    };
-    use async::ffi::epoll_event;
-    use handler::{
+    use aio::async::Mode;
+    use aio::async::ffi::epoll_event;
+    use aio::handler::{
         Handler,
         Loop,
         Stream,

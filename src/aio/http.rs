@@ -5,8 +5,8 @@ use std::fmt::Debug;
 use std::io;
 use std::mem;
 
-use handler::{Loop, Stream};
-use net::{
+use aio::handler::{Loop, Stream};
+use aio::net::{
     TcpConnection,
     TcpConnectionNotify,
 };

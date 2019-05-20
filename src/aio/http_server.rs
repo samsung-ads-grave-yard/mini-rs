@@ -126,4 +126,5 @@ pub fn serve<HANDLER>(event_loop: &mut Loop, addr: &str, handler: HANDLER) -> io
 where HANDLER: HttpHandler + 'static,
 {
     TcpListener::ip4(event_loop, addr, Listener::new(handler))
+        .map(|(stream, _addr)| stream)
 }

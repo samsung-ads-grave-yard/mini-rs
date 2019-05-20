@@ -386,6 +386,7 @@ pub enum ConnectionMsg {
 
 pub enum ConnectionComponentMsg {
     ReadWrite(epoll_event),
+    Send,
     Write(Vec<u8>),
 }
 
@@ -393,6 +394,8 @@ struct _TcpConnection {
     // TODO: should the VecDeque be bounded?
     buffers: VecDeque<Buffer>, // The system should probably reuse the buffer and keep adding to it even if the trait does not consume its data. That should be better than a Vec inside a VecDeque.
     disposed: bool,
+    handle: Option<Stream<ConnectionComponentMsg>>,
+    muted: bool,
     stream: TcpStream,
 }
 
@@ -402,6 +405,7 @@ impl _TcpConnection {
         if let Some(ref mut first_buffer) = self.buffers.front_mut() {
             match self.stream.write(first_buffer.slice()) {
                 Ok(written) => {
+                    connection_notify.sent();
                     first_buffer.advance(written);
                     if first_buffer.exhausted() {
                         remove_buffer = true;
@@ -433,14 +437,18 @@ impl TcpConnection {
             connection: Rc::new(RefCell::new(_TcpConnection {
                 buffers: VecDeque::new(),
                 disposed: false,
+                handle: None,
+                muted: false,
                 stream,
             })),
         }
     }
 
     fn close(&self) {
-        println!("Shutdown");
-        let _ = self.connection.borrow().stream.shutdown(Shutdown::Both); // TODO: handle error.
+        if let Err(error) = self.connection.borrow().stream.shutdown(Shutdown::Both) {
+            // TODO: handle error.
+            eprintln!("Error· {}", error);
+        }
     }
 
     // TODO: in debug mode, warn if dispose is not called (to help in detecting leaks). Maybe
@@ -460,6 +468,14 @@ impl TcpConnection {
         tcp::connect_to_host(host, &port.to_string(), event_loop, connection)
     }
 
+    pub fn mute(&self) {
+        self.connection.borrow_mut().muted = true;
+    }
+
+    pub fn muted(&self) -> bool {
+        self.connection.borrow().muted
+    }
+
     fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.connection.borrow_mut().stream.read(buffer)
     }
@@ -467,6 +483,14 @@ impl TcpConnection {
     fn send(&self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
         let mut connection = self.connection.borrow_mut();
         connection.send(event_loop, connection_notify);
+    }
+
+    fn set_handle(&self, handle: &Stream<ConnectionComponentMsg>) {
+        self.connection.borrow_mut().handle = Some(handle.clone());
+    }
+
+    pub fn unmute(&self) {
+        self.connection.borrow_mut().muted = false;
     }
 
     pub fn write(&self, buffer: Vec<u8>) -> io::Result<()> {
@@ -482,6 +506,9 @@ impl TcpConnection {
                 },
                 Err(error) => return Err(error),
                 Ok(written) => {
+                    if let Some(ref handle) = connection.handle {
+                        handle.send(ConnectionComponentMsg::Send);
+                    }
                     index += written;
                     if index >= buffer_size {
                         return Ok(());
@@ -521,7 +548,6 @@ impl Handler for ConnectionComponent {
     fn update(&mut self, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
         match msg {
             ConnectionComponentMsg::ReadWrite(event) => {
-                let mut disposed = false;
                 if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     // TODO: are we sure we want to remove the fd from epoll when there's an error?
@@ -533,7 +559,7 @@ impl Handler for ConnectionComponent {
                     self.connection.close();
                     // TODO: stop handler.
                 }
-                if event.events & Mode::Read as u32 != 0 {
+                if event.events & Mode::Read as u32 != 0 && !self.connection.muted() {
                     let mut buffer = vec![0; 4096];
                     match self.connection.read(&mut buffer) {
                         Err(ref error) if error.kind() == ErrorKind::WouldBlock ||
@@ -542,10 +568,10 @@ impl Handler for ConnectionComponent {
                             if bytes_read > 0 {
                                 buffer.truncate(bytes_read);
                                 self.connection_notify.received(&mut self.connection, buffer);
-                                disposed = disposed || self.connection.disposed();
                             }
                             else {
                                 let _ = self.event_loop.remove_fd(&self.connection);
+                                self.connection_notify.closed(&mut self.connection);
                                 // TODO: remove the handler as well.
                             }
                         },
@@ -558,11 +584,14 @@ impl Handler for ConnectionComponent {
                 if event.events & Mode::Write as u32 != 0 {
                     self.connection.send(&mut self.event_loop, &mut *self.connection_notify);
                 }
-                if disposed {
+                if self.connection.disposed() {
                     self.connection_notify.closed(&mut self.connection);
                     self.connection.close();
                     // TODO: stop handler.
                 }
+            },
+            ConnectionComponentMsg::Send => {
+                self.connection_notify.sent();
             },
             ConnectionComponentMsg::Write(data) =>
                 if let Err(error) = self.connection.write(data) {
@@ -610,8 +639,8 @@ pub trait TcpConnectionNotify {
     fn error(&mut self, _error: io::Error) {
     }
 
-    fn sent(&mut self, _connection: &mut TcpConnection, data: Vec<u8>) -> Vec<u8> {
-        data
+    fn sent(&mut self/*, _connection: &mut TcpConnection, data: Vec<u8>*/) /*-> Vec<u8>*/ { // TODO: add missing parameters.
+        //data
     }
 
     fn wait_for_bytes(&mut self, _connection: &mut TcpConnection, _quantity: usize) -> usize {
@@ -643,9 +672,10 @@ fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut c
 
     match event_loop.try_add_fd(&connection, Mode::ReadWrite) {
         Ok(event) => {
-            let component = ConnectionComponent::new(connection, connection_notify, event_loop);
+            let component = ConnectionComponent::new(connection.clone(), connection_notify, event_loop);
             let stream = event_loop.spawn(component);
             event.set_callback(&stream, ConnectionComponentMsg::ReadWrite);
+            connection.set_handle(&stream);
             if let Some(ref connection_stream) = connection_stream {
                 connection_stream.send(ConnectionMsg::Connected(stream));
             }
@@ -671,7 +701,7 @@ impl<L> TcpListener<L> {
 
     // FIXME: host should probably be impl ToSocketAddr.
     pub fn ip4(event_loop: &mut Loop, host: &str, mut listen_notify: L)
-        -> io::Result<Stream<ListenerMsg>>
+        -> io::Result<(Stream<ListenerMsg>, net::SocketAddr)>
     where L: TcpListenNotify + 'static,
     {
         let tcp_listener =
@@ -687,10 +717,11 @@ impl<L> TcpListener<L> {
             };
         tcp_listener.set_nonblocking(true)?;
         let fd = tcp_listener.as_raw_fd();
+        let addr = tcp_listener.local_addr()?;
         let listener = TcpListener::new(tcp_listener, listen_notify, event_loop);
         let stream = event_loop.spawn(listener);
         event_loop.add_raw_fd(fd, Mode::Read, &stream, ReadEvent)?;
-        Ok(stream)
+        Ok((stream, addr))
     }
 }
 
@@ -701,6 +732,9 @@ where L: TcpListenNotify,
 
     fn update(&mut self, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
         match msg {
+            /*Dispose => {
+                self.tcp_listener.
+            },*/
             ReadEvent(event) => {
                 if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?

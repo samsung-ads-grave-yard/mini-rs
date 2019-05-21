@@ -528,7 +528,7 @@ impl TcpConnection {
         Ok(())
     }
 
-    fn as_raw_fd(&self) -> Option<RawFd> {
+    pub fn as_raw_fd(&self) -> Option<RawFd> {
         self.connection.borrow().stream.as_ref().map(|stream| stream.as_raw_fd())
     }
 }

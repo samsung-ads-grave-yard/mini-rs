@@ -10,7 +10,6 @@ use std::io::{
 use std::mem;
 use std::net::{
     self,
-    Shutdown,
     TcpStream,
 };
 use std::os::unix::io::{
@@ -57,10 +56,7 @@ pub fn set_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<()> {
 pub mod tcp {
     use std::mem;
     use std::net::TcpStream;
-    use std::os::unix::io::{
-        AsRawFd,
-        FromRawFd,
-    };
+    use std::os::unix::io::FromRawFd;
     use std::marker::PhantomData;
 
     use aio::async::Mode;
@@ -163,7 +159,11 @@ pub mod tcp {
                     }
                 },
                 WriteEvent(event, connection, mut connection_notify, address_infos, count) => {
-                    let fd = connection.as_raw_fd();
+                    let fd =
+                        match connection.as_raw_fd() {
+                            Some(fd) => fd,
+                            None => return,
+                        };
                     if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                         stream.send(TryingConnectionToHost(connection_notify, address_infos, count + 1));
                     }
@@ -396,28 +396,30 @@ struct _TcpConnection {
     disposed: bool,
     handle: Option<Stream<ConnectionComponentMsg>>,
     muted: bool,
-    stream: TcpStream,
+    stream: Option<TcpStream>,
 }
 
 impl _TcpConnection {
     fn send(&mut self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
         let mut remove_buffer = false;
         if let Some(ref mut first_buffer) = self.buffers.front_mut() {
-            match self.stream.write(first_buffer.slice()) {
-                Ok(written) => {
-                    connection_notify.sent();
-                    first_buffer.advance(written);
-                    if first_buffer.exhausted() {
-                        remove_buffer = true;
-                    }
-                },
-                Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
-                Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
-                Err(error) => {
-                    connection_notify.error(error);
-                    let _ = event_loop.remove_fd(&self.stream);
-                    // TODO: remove the handler as well.
-                },
+            if let Some(ref mut stream) = self.stream {
+                match stream.write(first_buffer.slice()) {
+                    Ok(written) => {
+                        connection_notify.sent();
+                        first_buffer.advance(written);
+                        if first_buffer.exhausted() {
+                            remove_buffer = true;
+                        }
+                    },
+                    Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
+                    Err(ref error) if error.kind() == ErrorKind::Interrupted => (),
+                    Err(error) => {
+                        connection_notify.error(error);
+                        let _ = event_loop.remove_fd(stream);
+                        // TODO: remove the handler as well.
+                    },
+                }
             }
         }
         if remove_buffer {
@@ -439,16 +441,13 @@ impl TcpConnection {
                 disposed: false,
                 handle: None,
                 muted: false,
-                stream,
+                stream: Some(stream),
             })),
         }
     }
 
     fn close(&self) {
-        if let Err(error) = self.connection.borrow().stream.shutdown(Shutdown::Both) {
-            // TODO: handle error.
-            eprintln!("Error· {}", error);
-        }
+        self.connection.borrow_mut().stream.take();
     }
 
     // TODO: in debug mode, warn if dispose is not called (to help in detecting leaks). Maybe
@@ -477,7 +476,12 @@ impl TcpConnection {
     }
 
     fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.connection.borrow_mut().stream.read(buffer)
+        if let Some(ref mut stream) = self.connection.borrow_mut().stream {
+            stream.read(buffer)
+        }
+        else {
+            Ok(0)
+        }
     }
 
     fn send(&self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
@@ -496,10 +500,15 @@ impl TcpConnection {
     pub fn write(&self, buffer: Vec<u8>) -> io::Result<()> {
         let buffer_size = buffer.len();
         let mut index = 0;
+        let mut connection = self.connection.borrow_mut();
         while index < buffer.len() {
             // TODO: yield to avoid starvation?
-            let mut connection = self.connection.borrow_mut();
-            match connection.stream.write(&buffer[index..]) {
+            let stream =
+                match connection.stream {
+                    Some(ref mut stream) => stream,
+                    None => break,
+                };
+            match stream.write(&buffer[index..]) {
                 Err(ref error) if error.kind() == ErrorKind::WouldBlock => {
                     connection.buffers.push_back(Buffer::new(buffer, index));
                     return Ok(());
@@ -518,11 +527,9 @@ impl TcpConnection {
         }
         Ok(())
     }
-}
 
-impl AsRawFd for TcpConnection {
-    fn as_raw_fd(&self) -> RawFd {
-        self.connection.borrow().stream.as_raw_fd()
+    fn as_raw_fd(&self) -> Option<RawFd> {
+        self.connection.borrow().stream.as_ref().map(|stream| stream.as_raw_fd())
     }
 }
 
@@ -551,13 +558,15 @@ impl Handler for ConnectionComponent {
                 if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
                     // TODO: do we want to signal these errors to the trait?
                     // TODO: are we sure we want to remove the fd from epoll when there's an error?
-                    if let Err(error) = self.event_loop.remove_raw_fd(self.connection.as_raw_fd()) {
-                        // TODO: not sure if it makes sense to report this error to the user.
-                        self.connection_notify.error(error);
+                    if let Some(fd) = self.connection.as_raw_fd() {
+                        if let Err(error) = self.event_loop.remove_raw_fd(fd) {
+                            // TODO: not sure if it makes sense to report this error to the user.
+                            self.connection_notify.error(error);
+                        }
+                        self.connection_notify.closed(&mut self.connection); // FIXME: should it only be called for HangupError?
+                        self.connection.close();
+                        // TODO: stop handler.
                     }
-                    self.connection_notify.closed(&mut self.connection); // FIXME: should it only be called for HangupError?
-                    self.connection.close();
-                    // TODO: stop handler.
                 }
                 if event.events & Mode::Read as u32 != 0 && !self.connection.muted() {
                     let mut buffer = vec![0; 4096];
@@ -570,13 +579,18 @@ impl Handler for ConnectionComponent {
                                 self.connection_notify.received(&mut self.connection, buffer);
                             }
                             else {
-                                let _ = self.event_loop.remove_fd(&self.connection);
+                                if let Some(fd) = self.connection.as_raw_fd() {
+                                    let _ = self.event_loop.remove_raw_fd(fd);
+                                }
                                 self.connection_notify.closed(&mut self.connection);
+                                self.connection.close();
                                 // TODO: remove the handler as well.
                             }
                         },
                         Err(_) => {
-                            let _ = self.event_loop.remove_fd(&self.connection);
+                            if let Some(fd) = self.connection.as_raw_fd() {
+                                let _ = self.event_loop.remove_raw_fd(fd);
+                            }
                             // TODO: remove the handler as well.
                         },
                     }
@@ -596,7 +610,9 @@ impl Handler for ConnectionComponent {
             ConnectionComponentMsg::Write(data) =>
                 if let Err(error) = self.connection.write(data) {
                     self.connection_notify.error(error);
-                    let _ = self.event_loop.remove_fd(&self.connection);
+                    if let Some(fd) = self.connection.as_raw_fd() {
+                        let _ = self.event_loop.remove_raw_fd(fd);
+                    }
                     // TODO: remove the handler as well.
                 },
         }
@@ -663,6 +679,7 @@ pub trait TcpConnectionNotify {
 }
 
 pub enum ListenerMsg {
+    Dispose,
     ReadEvent(epoll_event),
 }
 
@@ -670,7 +687,12 @@ fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut c
     connection_stream: Option<&Stream<ConnectionMsg>>) {
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
 
-    match event_loop.try_add_fd(&connection, Mode::ReadWrite) {
+    let fd =
+        match connection.as_raw_fd() {
+            Some(fd) => fd,
+            None => return,
+        };
+    match event_loop.try_add_raw_fd(fd, Mode::ReadWrite) {
         Ok(event) => {
             let component = ConnectionComponent::new(connection.clone(), connection_notify, event_loop);
             let stream = event_loop.spawn(component);
@@ -687,7 +709,7 @@ fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut c
 pub struct TcpListener<L> {
     event_loop: Loop,
     listen_notify: L,
-    tcp_listener: net::TcpListener,
+    tcp_listener: Option<net::TcpListener>,
 }
 
 impl<L> TcpListener<L> {
@@ -695,7 +717,7 @@ impl<L> TcpListener<L> {
         Self {
             event_loop: event_loop.clone(),
             listen_notify,
-            tcp_listener,
+            tcp_listener: Some(tcp_listener),
         }
     }
 
@@ -732,40 +754,41 @@ where L: TcpListenNotify,
 
     fn update(&mut self, _stream: &Stream<Self::Msg>, msg: Self::Msg) {
         match msg {
-            /*Dispose => {
-                self.tcp_listener.
-            },*/
+            Dispose => {
+                self.tcp_listener.take();
+            },
             ReadEvent(event) => {
-                if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
-                    // TODO: do we want to signal these errors to the trait?
-                    // TODO: are we sure we want to remove the fd from epoll when there's an error?
-                    if let Err(error) = self.event_loop.remove_raw_fd(self.tcp_listener.as_raw_fd()) { // TODO: do a version of this method that takes a AsRawFd.
-                        // TODO: not sure if it makes sense to report this error to the user.
-                        self.listen_notify.error(error);
+                if let Some(ref tcp_listener) = self.tcp_listener {
+                    if (event.events & (StatusMode::HangupError as u32 | StatusMode::Error as u32)) != 0 {
+                        // TODO: do we want to signal these errors to the trait?
+                        // TODO: are we sure we want to remove the fd from epoll when there's an error?
+                        if let Err(error) = self.event_loop.remove_raw_fd(tcp_listener.as_raw_fd()) { // TODO: do a version of this method that takes a AsRawFd.
+                            // TODO: not sure if it makes sense to report this error to the user.
+                            self.listen_notify.error(error);
+                        }
+                        self.listen_notify.closed(&tcp_listener); // FIXME: should it only be called for HangupError?
+                        // TODO: remove this handler.
                     }
-                    self.listen_notify.closed(&&self.tcp_listener); // FIXME: should it only be called for HangupError?
-                    // TODO: remove this handler.
-                }
-                else if event.events & Mode::Read as u32 != 0 {
-                    // TODO: accept many times?
-                    match self.tcp_listener.accept() {
-                        Ok((stream, _addr)) => {
-                            match stream.set_nonblocking(true) {
-                                Ok(()) => {
-                                    let mut connection_notify = self.listen_notify.connected(&self.tcp_listener);
-                                    let mut connection = TcpConnection::new(stream);
-                                    connection_notify.accepted(&mut connection);
-                                    manage_connection(&mut self.event_loop, connection, connection_notify, None);
-                                },
-                                Err(error) => self.listen_notify.error(error),
-                            }
-                        },
-                        Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
-                        Err(error) => self.listen_notify.error(error),
+                    else if event.events & Mode::Read as u32 != 0 {
+                        // TODO: accept many times?
+                        match tcp_listener.accept() {
+                            Ok((stream, _addr)) => {
+                                match stream.set_nonblocking(true) {
+                                    Ok(()) => {
+                                        let mut connection_notify = self.listen_notify.connected(&tcp_listener);
+                                        let mut connection = TcpConnection::new(stream);
+                                        connection_notify.accepted(&mut connection);
+                                        manage_connection(&mut self.event_loop, connection, connection_notify, None);
+                                    },
+                                    Err(error) => self.listen_notify.error(error),
+                                }
+                            },
+                            Err(ref error) if error.kind() == ErrorKind::WouldBlock => (),
+                            Err(error) => self.listen_notify.error(error),
+                        }
                     }
+                    // TODO: call listen_notify.closed().
                 }
-                // TODO: call listen_notify.closed().
-                // TODO: have a message Dispose to stop listening.
             },
         }
     }

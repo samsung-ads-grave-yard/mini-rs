@@ -1,15 +1,24 @@
 // TODO: make a web crawler example.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io;
 use std::mem;
+use std::rc::Rc;
 
-use aio::handler::{Loop, Stream};
+use aio::handler::{
+    Handler,
+    Loop,
+    Stream,
+};
 use aio::net::{
     TcpConnection,
     TcpConnectionNotify,
 };
+use aio::uhttp_uri::HttpUri;
+
+use self::Msg::*;
 
 fn deque_compare(buffer: &VecDeque<u8>, start: usize, len: usize, value: &[u8]) -> bool {
     if value.len() < len {
@@ -74,16 +83,18 @@ struct Connection<HANDLER> {
     buffer: VecDeque<u8>,
     content_length: usize,
     handler: HANDLER,
-    uri: String,
+    host: String,
+    path: String,
 }
 
 impl<HANDLER> Connection<HANDLER> {
-    fn new(uri: &str, handler: HANDLER) -> Self {
+    fn new(host: &str, handler: HANDLER, path: &str) -> Self {
         Self {
             buffer: VecDeque::new(),
             content_length: 0,
             handler,
-            uri: uri.to_string(),
+            host: host.to_string(),
+            path: path.to_string(),
         }
     }
 }
@@ -96,7 +107,9 @@ where HANDLER: HttpHandler,
     }
 
     fn connected(&mut self, connection: &mut TcpConnection) {
-        if let Err(error) = connection.write(format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", self.uri).into_bytes()) {
+        if let Err(error) = connection.write(format!("GET {} HTTP/1.1\r\nHost: {}\r\n\r\n", self.path, self.host)
+            .into_bytes())
+        {
             self.handler.error(error);
         }
     }
@@ -116,7 +129,7 @@ where HANDLER: HttpHandler,
                 None => (), // Might find the content length in the next data.
             }
         }
-        else if self.buffer.len() >= self.content_length {
+        if self.buffer.len() >= self.content_length {
             let buffer = mem::replace(&mut self.buffer, VecDeque::new());
             self.handler.response(buffer.into());
             connection.dispose();
@@ -193,15 +206,65 @@ impl Http {
         }
     }
 
-    pub fn get<HANDLER>(&self, uri: &str, event_loop: &mut Loop, handler: HANDLER)
+    pub fn blocking_get(&self, uri: &str) -> io::Result<Vec<u8>> {
+        let result = Rc::new(RefCell::new(Ok(vec![])));
+        let mut event_loop = Loop::new()?;
+        let stream = event_loop.spawn(BlockingHttpHandler::new(&event_loop, result.clone()));
+        let http = Http::new();
+        http.get(uri, &mut event_loop, DefaultHttpHandler::new(&stream, HttpGet, HttpError))
+            .map_err(|()| io::Error::new(io::ErrorKind::Other, ""))?;
+        event_loop.run()?;
+        let mut result = result.borrow_mut();
+        mem::replace(&mut *result, Ok(vec![]))
+    }
+
+    pub fn get<HANDLER>(&self, uri: &str, event_loop: &mut Loop, handler: HANDLER) -> Result<(), ()>
     where HANDLER: HttpHandler + 'static,
     {
-        TcpConnection::ip4(event_loop, uri, 80, Connection::new(uri, handler));
+        let uri = HttpUri::new(uri)?;
+        TcpConnection::ip4(event_loop, uri.host, uri.port, Connection::new(uri.host, handler, uri.resource.path));
+        Ok(())
     }
 }
 
 impl Default for Http {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug)]
+enum Msg {
+    HttpGet(Vec<u8>),
+    HttpError(io::Error),
+}
+
+struct BlockingHttpHandler {
+    event_loop: Loop,
+    result: Rc<RefCell<io::Result<Vec<u8>>>>,
+}
+
+impl BlockingHttpHandler {
+    fn new(event_loop: &Loop, result: Rc<RefCell<io::Result<Vec<u8>>>>) -> Self {
+        Self {
+            event_loop: event_loop.clone(),
+            result,
+        }
+    }
+}
+
+impl Handler for BlockingHttpHandler {
+    type Msg = Msg;
+
+    fn update(&mut self, _stream: &Stream<Msg>, msg: Self::Msg) {
+        match msg {
+            HttpGet(body) => {
+                *self.result.borrow_mut() = Ok(body);
+            },
+            HttpError(error) => {
+                *self.result.borrow_mut() = Err(error);
+            },
+        }
+        self.event_loop.stop()
     }
 }

@@ -86,21 +86,27 @@ impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
     }
 }
 
+struct Inner {
+    handlers: Slab<Box<Callable>>,
+    registered_entries: Rc<RefCell<Vec<usize>>>,
+    stopped: bool,
+}
+
 #[derive(Clone)]
 pub struct Loop {
     event_loop: EventLoop,
-    handlers: Rc<RefCell<Slab<Box<Callable>>>>,
-    registered_entries: Rc<RefCell<Vec<usize>>>,
-    stopped: bool,
+    inner: Rc<RefCell<Inner>>,
 }
 
 impl Loop {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             event_loop: EventLoop::new()?,
-            handlers: Rc::new(RefCell::new(Slab::new())),
-            registered_entries: Rc::new(RefCell::new(vec![])),
-            stopped: false,
+            inner: Rc::new(RefCell::new(Inner {
+                handlers: Slab::new(),
+                registered_entries: Rc::new(RefCell::new(vec![])),
+                stopped: false,
+            })),
         })
     }
 
@@ -130,9 +136,11 @@ impl Loop {
     where HANDLER: Handler<Msg=MSG> + 'static,
           MSG: 'static,
     {
-        let mut handlers = self.handlers.borrow_mut();
+        let mut inner = self.inner.borrow_mut();
+        let registered_entries = inner.registered_entries.clone();
+        let handlers = &mut inner.handlers;
         let entry = handlers.vacant_entry();
-        let stream = Stream::new(self.registered_entries.clone(), entry.key());
+        let stream = Stream::new(registered_entries, entry.key());
         entry.insert(Box::new(Component {
             handler,
             stream: stream.clone(),
@@ -142,13 +150,13 @@ impl Loop {
     }
 
     pub fn iterate(&mut self, event_list: &mut [epoll_event]) -> EpollResult {
-        let registered_entries = mem::replace(&mut *self.registered_entries.borrow_mut(), vec![]);
+        let registered_entries = mem::replace(&mut *self.inner.borrow().registered_entries.borrow_mut(), vec![]);
         for entry in registered_entries {
-            if self.handlers.borrow().contains(entry) {
+            if self.inner.borrow().handlers.contains(entry) {
                 // NOTE: Remove the handler because handlers can be added in the update() method.
-                let mut handler = std::mem::replace(&mut self.handlers.borrow_mut()[entry], Box::new(NotCallable));
+                let mut handler = std::mem::replace(&mut self.inner.borrow_mut().handlers[entry], Box::new(NotCallable));
                 handler.process();
-                self.handlers.borrow_mut()[entry] = handler;
+                self.inner.borrow_mut().handlers[entry] = handler;
             }
         }
         self.event_loop.iterate(event_list)
@@ -165,7 +173,7 @@ impl Loop {
     pub fn run(&mut self) -> io::Result<()> {
         let mut event_list = event_list();
 
-        while !self.stopped {
+        while !self.inner.borrow().stopped {
             match self.iterate(&mut event_list) {
                 // Restart if interrupted by signal.
                 EpollResult::Interrupted => continue,
@@ -178,7 +186,7 @@ impl Loop {
     }
 
     pub fn stop(&mut self) {
-        self.stopped = true;
+        self.inner.borrow_mut().stopped = true;
         EventLoop::wakeup();
     }
 

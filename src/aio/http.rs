@@ -84,16 +84,18 @@ struct Connection<HANDLER> {
     content_length: usize,
     handler: HANDLER,
     host: String,
+    method: &'static str,
     path: String,
 }
 
 impl<HANDLER> Connection<HANDLER> {
-    fn new(host: &str, handler: HANDLER, path: &str) -> Self {
+    fn new(host: &str, handler: HANDLER, path: &str, method: &'static str) -> Self {
         Self {
             buffer: VecDeque::new(),
             content_length: 0,
             handler,
             host: host.to_string(),
+            method,
             path: path.to_string(),
         }
     }
@@ -107,8 +109,8 @@ where HANDLER: HttpHandler,
     }
 
     fn connected(&mut self, connection: &mut TcpConnection) {
-        if let Err(error) = connection.write(format!("GET {} HTTP/1.1\r\nHost: {}\r\n\r\n", self.path, self.host)
-            .into_bytes())
+        if let Err(error) = connection.write(format!("{} {} HTTP/1.1\r\nHost: {}\r\n\r\n", self.method, self.path,
+            self.host).into_bytes())
         {
             self.handler.error(error);
         }
@@ -206,23 +208,46 @@ impl Http {
         }
     }
 
-    pub fn blocking_get(&self, uri: &str) -> io::Result<Vec<u8>> {
+    fn blocking<F: Fn(Rc<RefCell<io::Result<Vec<u8>>>>, &mut Loop) -> io::Result<()>>(&self, callback: F) -> io::Result<Vec<u8>> {
         let result = Rc::new(RefCell::new(Ok(vec![])));
         let mut event_loop = Loop::new()?;
-        let stream = event_loop.spawn(BlockingHttpHandler::new(&event_loop, result.clone()));
-        let http = Http::new();
-        http.get(uri, &mut event_loop, DefaultHttpHandler::new(&stream, HttpGet, HttpError))
-            .map_err(|()| io::Error::new(io::ErrorKind::Other, ""))?;
+        callback(result.clone(), &mut event_loop)?;
         event_loop.run()?;
         let mut result = result.borrow_mut();
         mem::replace(&mut *result, Ok(vec![]))
+    }
+
+    pub fn blocking_get(&self, uri: &str) -> io::Result<Vec<u8>> {
+        self.blocking(|result, event_loop| {
+            let stream = event_loop.spawn(BlockingHttpHandler::new(&event_loop, result));
+            let http = Http::new();
+            http.get(uri, event_loop, DefaultHttpHandler::new(&stream, HttpGet, HttpError))
+                .map_err(|()| io::Error::new(io::ErrorKind::Other, ""))
+        })
+    }
+
+    pub fn blocking_post(&self, uri: &str) -> io::Result<Vec<u8>> {
+        self.blocking(|result, event_loop| {
+            let stream = event_loop.spawn(BlockingHttpHandler::new(&event_loop, result));
+            let http = Http::new();
+            http.post(uri, event_loop, DefaultHttpHandler::new(&stream, HttpGet, HttpError))
+                .map_err(|()| io::Error::new(io::ErrorKind::Other, ""))
+        })
     }
 
     pub fn get<HANDLER>(&self, uri: &str, event_loop: &mut Loop, handler: HANDLER) -> Result<(), ()>
     where HANDLER: HttpHandler + 'static,
     {
         let uri = HttpUri::new(uri)?;
-        TcpConnection::ip4(event_loop, uri.host, uri.port, Connection::new(uri.host, handler, uri.resource.path));
+        TcpConnection::ip4(event_loop, uri.host, uri.port, Connection::new(uri.host, handler, uri.resource.path, "GET"));
+        Ok(())
+    }
+
+    pub fn post<HANDLER>(&self, uri: &str, event_loop: &mut Loop, handler: HANDLER) -> Result<(), ()>
+    where HANDLER: HttpHandler + 'static,
+    {
+        let uri = HttpUri::new(uri)?;
+        TcpConnection::ip4(event_loop, uri.host, uri.port, Connection::new(uri.host, handler, uri.resource.path, "POST"));
         Ok(())
     }
 }

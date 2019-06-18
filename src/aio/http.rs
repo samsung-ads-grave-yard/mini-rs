@@ -7,16 +7,16 @@ use std::io;
 use std::mem;
 use std::rc::Rc;
 
-use aio::handler::{
+use crate::aio::handler::{
     Handler,
     Loop,
     Stream,
 };
-use aio::net::{
+use crate::aio::net::{
     TcpConnection,
     TcpConnectionNotify,
 };
-use aio::uhttp_uri::HttpUri;
+use crate::aio::uhttp_uri::HttpUri;
 
 use self::Msg::*;
 

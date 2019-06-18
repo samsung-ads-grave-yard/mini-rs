@@ -24,7 +24,7 @@ use std::sync::mpsc::{
 };
 use std::thread;
 
-use mini::aio::async::Mode;
+use mini::aio::poll::Mode;
 use mini::aio::handler::Loop;
 use mini::aio::net::{
     ListenerMsg::ReadEvent,
@@ -45,7 +45,7 @@ impl Listener {
 }
 
 impl TcpListenNotify for Listener {
-    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<dyn TcpConnectionNotify> {
         Box::new(Server {})
     }
 }
@@ -80,7 +80,7 @@ impl TcpListenNotify for MasterListener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<dyn TcpConnectionNotify> {
         Box::new(Server {})
     }
 }

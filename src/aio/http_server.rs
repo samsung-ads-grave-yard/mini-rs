@@ -7,14 +7,14 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net;
 
-use aio::handler::{Loop, Stream};
-use aio::net::{
+use crate::aio::handler::{Loop, Stream};
+use crate::aio::net::{
     ListenerMsg,
     TcpConnection,
     TcpConnectionNotify,
     TcpListenNotify,
 };
-use aio::net::TcpListener;
+use crate::aio::net::TcpListener;
 
 struct Listener<HANDLER> {
     handler: HANDLER,
@@ -42,7 +42,7 @@ impl<HANDLER: HttpHandler + 'static> TcpListenNotify for Listener<HANDLER> {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<dyn TcpConnectionNotify> {
         Box::new(Server::new(self.handler.clone()))
     }
 }

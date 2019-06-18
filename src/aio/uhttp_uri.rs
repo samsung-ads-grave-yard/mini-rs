@@ -130,14 +130,14 @@ impl<'a> HttpResource<'a> {
 
 impl<'a> std::fmt::Display for HttpResource<'a> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        try!(fmt.write_str(self.path));
+        fmt.write_str(self.path)?;
 
         if let Some(q) = self.query {
-            try!(write!(fmt, "?{}", q));
+            write!(fmt, "?{}", q)?;
         }
 
         if let Some(f) = self.fragment {
-            try!(write!(fmt, "#{}", f));
+            write!(fmt, "#{}", f)?;
         }
 
         Ok(())

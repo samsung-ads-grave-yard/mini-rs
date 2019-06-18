@@ -5,6 +5,7 @@ authors = ["Antoni Boucher <antoni.boucher@samsung.com>"]
 description = "Dependency-free extension to the standard library"
 repository = "https://github.com/adgear/mini-rs"
 license = "MIT"
+edition = "2018"
 
 [features]
 nightly_test = []

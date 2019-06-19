@@ -20,9 +20,9 @@ use std::ptr;
 use std::rc::Rc;
 use std::str;
 
-use aio::async::{self, Mode};
-use aio::async::ffi::epoll_event;
-use aio::handler::{
+use crate::aio::poll::{self, Mode};
+use crate::aio::poll::ffi::epoll_event;
+use crate::aio::handler::{
     Loop,
     Handler,
     Stream,
@@ -32,8 +32,8 @@ use self::ListenerMsg::*;
 
 #[repr(u32)]
 enum StatusMode {
-    Error = async::ffi::EPOLLERR,
-    HangupError = async::ffi::EPOLLHUP,
+    Error = poll::ffi::EPOLLERR,
+    HangupError = poll::ffi::EPOLLHUP,
 }
 
 /*fn get_nonblocking<A: AsRawFd>(socket: &A) -> io::Result<bool> {
@@ -59,9 +59,9 @@ pub mod tcp {
     use std::os::unix::io::FromRawFd;
     use std::marker::PhantomData;
 
-    use aio::async::Mode;
-    use aio::async::ffi::epoll_event;
-    use aio::handler::{
+    use crate::aio::poll::Mode;
+    use crate::aio::poll::ffi::epoll_event;
+    use crate::aio::handler::{
         Handler,
         Loop,
         Stream,
@@ -400,7 +400,7 @@ struct _TcpConnection {
 }
 
 impl _TcpConnection {
-    fn send(&mut self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
+    fn send(&mut self, event_loop: &mut Loop, connection_notify: &mut dyn TcpConnectionNotify) {
         let mut remove_buffer = false;
         if let Some(ref mut first_buffer) = self.buffers.front_mut() {
             if let Some(ref mut stream) = self.stream {
@@ -484,7 +484,7 @@ impl TcpConnection {
         }
     }
 
-    fn send(&self, event_loop: &mut Loop, connection_notify: &mut TcpConnectionNotify) {
+    fn send(&self, event_loop: &mut Loop, connection_notify: &mut dyn TcpConnectionNotify) {
         let mut connection = self.connection.borrow_mut();
         connection.send(event_loop, connection_notify);
     }
@@ -535,12 +535,12 @@ impl TcpConnection {
 
 struct ConnectionComponent {
     connection: TcpConnection,
-    connection_notify: Box<TcpConnectionNotify>,
+    connection_notify: Box<dyn TcpConnectionNotify>,
     event_loop: Loop,
 }
 
 impl ConnectionComponent {
-    fn new(connection: TcpConnection, connection_notify: Box<TcpConnectionNotify>, event_loop: &Loop) -> Self {
+    fn new(connection: TcpConnection, connection_notify: Box<dyn TcpConnectionNotify>, event_loop: &Loop) -> Self {
         Self {
             connection,
             connection_notify,
@@ -629,7 +629,7 @@ pub trait TcpListenNotify {
     fn closed(&mut self, _listener: &net::TcpListener) {
     }
 
-    fn connected(&mut self, listener: &net::TcpListener) -> Box<TcpConnectionNotify>;
+    fn connected(&mut self, listener: &net::TcpListener) -> Box<dyn TcpConnectionNotify>;
 
     fn error(&mut self, _error: io::Error) {
     }
@@ -683,7 +683,7 @@ pub enum ListenerMsg {
     ReadEvent(epoll_event),
 }
 
-fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut connection_notify: Box<TcpConnectionNotify>,
+fn manage_connection(event_loop: &mut Loop, mut connection: TcpConnection, mut connection_notify: Box<dyn TcpConnectionNotify>,
     connection_stream: Option<&Stream<ConnectionMsg>>) {
     connection_notify.connected(&mut connection); // TODO: is this second method necessary?
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use mini::aio::async::{
+use mini::aio::poll::{
     EpollResult,
     event_list,
 };
@@ -35,7 +35,7 @@ impl TcpListenNotify for Listener {
         eprintln!("Could not listen.");
     }
 
-    fn connected(&mut self, _listener: &net::TcpListener) -> Box<TcpConnectionNotify> {
+    fn connected(&mut self, _listener: &net::TcpListener) -> Box<dyn TcpConnectionNotify> {
         Box::new(Server {})
     }
 }

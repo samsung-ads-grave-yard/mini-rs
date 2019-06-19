@@ -8,7 +8,7 @@ use std::os::unix::io::{
 };
 use std::rc::Rc;
 
-use aio::async::{
+use crate::aio::poll::{
     self,
     Action,
     EpollResult,
@@ -16,8 +16,8 @@ use aio::async::{
     Mode,
     event_list,
 };
-use aio::async::ffi::epoll_event;
-use aio::slab::Slab;
+use crate::aio::poll::ffi::epoll_event;
+use crate::aio::slab::Slab;
 
 pub struct Stream<MSG> {
     elements: Rc<RefCell<VecDeque<MSG>>>,
@@ -87,7 +87,7 @@ impl<HANDLER: Handler<Msg=MSG>, MSG> Callable for Component<HANDLER, MSG> {
 }
 
 struct Inner {
-    handlers: Slab<Box<Callable>>,
+    handlers: Slab<Box<dyn Callable>>,
     registered_entries: Rc<RefCell<Vec<usize>>>,
     stopped: bool,
 }
@@ -204,11 +204,11 @@ impl Loop {
 }
 
 pub struct Event {
-    event: async::Event,
+    event: poll::Event,
 }
 
 impl Event {
-    fn new(event: async::Event) -> Self {
+    fn new(event: poll::Event) -> Self {
         Self {
             event,
         }
@@ -227,11 +227,11 @@ impl Event {
 }
 
 pub struct EventOnce {
-    event: async::EventOnce,
+    event: poll::EventOnce,
 }
 
 impl EventOnce {
-    fn new(event: async::EventOnce) -> Self {
+    fn new(event: poll::EventOnce) -> Self {
         Self {
             event,
         }

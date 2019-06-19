@@ -418,12 +418,12 @@ impl Options {
 
     /// Derives a custom formatted message from a set of options. The formatted options provided to
     /// a closure as an iterator.
-    pub fn usage_with_format<F: FnMut(&mut Iterator<Item=String>) -> String>(&self, mut formatter: F) -> String {
+    pub fn usage_with_format<F: FnMut(&mut dyn Iterator<Item=String>) -> String>(&self, mut formatter: F) -> String {
         formatter(&mut self.usage_items())
     }
 
     /// Derives usage items from a set of options.
-    fn usage_items<'a>(&'a self) -> Box<Iterator<Item=String> + 'a> {
+    fn usage_items<'a>(&'a self) -> Box<dyn Iterator<Item=String> + 'a> {
         let desc_sep = format!("\n{}", repeat(" ").take(24).collect::<String>());
 
         let any_short = self.grps.iter().any(|optref| {

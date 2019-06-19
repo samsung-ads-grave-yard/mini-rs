@@ -13,7 +13,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::u64;
 
-use aio::slab::Slab;
+use crate::aio::slab::Slab;
 
 const MAX_EVENTS: usize = 100; // TODO: tweak this value.
 
@@ -36,8 +36,8 @@ impl<T> FnBox for T where T: FnOnce(ffi::epoll_event) {
 
 enum Callback {
     Empty,
-    Normal(Box<FnMut(ffi::epoll_event) -> Action>),
-    Oneshot(Box<FnBox>),
+    Normal(Box<dyn FnMut(ffi::epoll_event) -> Action>),
+    Oneshot(Box<dyn FnBox>),
 }
 
 #[derive(PartialEq)]

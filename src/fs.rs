@@ -27,7 +27,7 @@ use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
-use rand::Rng;
+use crate::rand::Rng;
 
 /// A temporary file which is deleted when it goes out of scope.
 pub struct TempFile {

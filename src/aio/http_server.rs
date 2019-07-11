@@ -30,11 +30,8 @@ impl<HANDLER> Listener<HANDLER> {
 
 impl<HANDLER: HttpHandler + 'static> TcpListenNotify for Listener<HANDLER> {
     fn listening(&mut self, listener: &net::TcpListener) {
-        match listener.local_addr() {
-            Ok(address) =>
-                println!("Listening on {}:{}.", address.ip(), address.port()),
-            Err(error) =>
-                eprintln!("Could not get local address: {}.", error),
+        if let Err(error) = listener.local_addr() {
+            eprintln!("Could not get local address: {}.", error);
         }
     }
 

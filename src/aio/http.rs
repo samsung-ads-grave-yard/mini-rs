@@ -104,10 +104,6 @@ impl<HANDLER> Connection<HANDLER> {
 impl<HANDLER> TcpConnectionNotify for Connection<HANDLER>
 where HANDLER: HttpHandler,
 {
-    fn connecting(&mut self, _connection: &mut TcpConnection, count: u32) {
-        println!("Connecting. Attempt #{}", count);
-    }
-
     fn connected(&mut self, connection: &mut TcpConnection) {
         if let Err(error) = connection.write(format!("{} {} HTTP/1.1\r\nHost: {}\r\n\r\n", self.method, self.path,
             self.host).into_bytes())

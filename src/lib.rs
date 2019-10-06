@@ -20,15 +20,7 @@
  */
 
 // First crates to implement:
-// * rand
-// * logging
-// * cli argument parsing
-// * * getopts looks interesting.
-// * date/time
-// * * utc / timezone
-// * * monotone
-// * * format
-// * * tm struct
+// * logging (trimmed-down envlogger)
 //
 // Later:
 // * metrics (probably trivial-statsd)
@@ -37,3 +29,4 @@ pub mod aio;
 pub mod fs;
 pub mod getopts;
 pub mod rand;
+pub mod datetime;
